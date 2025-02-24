@@ -1,0 +1,7 @@
+
+CREATE TABLE movements (
+  id SERIAL PRIMARY KEY,
+  player INTEGER NOT NULL,
+  vector FLOAT[] NOT NULL,
+  created TIMESTAMP NOT NULL
+)
