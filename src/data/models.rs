@@ -18,7 +18,7 @@ pub struct AccountSelect {
     pub id: i32,
     pub username: String,
     pub password: String,
-    pub created: DateTime<Utc>
+    pub created: DateTime<Utc>,
 }
 // ------------------------------------------------
 
@@ -49,7 +49,7 @@ pub struct CharacterSelect {
 #[diesel(table_name = crate::schema::abilities)]
 #[diesel(check_for_backend(diesel::pg::Pg))]
 pub struct AbilityInsert {
-    pub name: String
+    pub name: String,
 }
 
 #[derive(Queryable, Selectable)]
@@ -57,7 +57,7 @@ pub struct AbilityInsert {
 #[diesel(check_for_backend(diesel::pg::Pg))]
 pub struct AbilitySelect {
     pub id: i32,
-    pub name: String
+    pub name: String,
 }
 // ------------------------------------------------
 
@@ -67,7 +67,7 @@ pub struct AbilitySelect {
 #[diesel(table_name = crate::schema::items)]
 #[diesel(check_for_backend(diesel::pg::Pg))]
 pub struct ItemInsert {
-    pub name: String
+    pub name: String,
 }
 
 #[derive(Queryable, Selectable)]
@@ -75,6 +75,6 @@ pub struct ItemInsert {
 #[diesel(check_for_backend(diesel::pg::Pg))]
 pub struct ItemSelect {
     pub id: i32,
-    pub name: String
+    pub name: String,
 }
 // ------------------------------------------------

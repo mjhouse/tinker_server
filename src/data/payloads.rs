@@ -1,41 +1,32 @@
-use serde::{Deserialize, Serialize};
 use actix_jwt_auth_middleware::FromRequest;
+use serde::{Deserialize, Serialize};
 use validator::Validate;
 
 // ------------------------------------------------
 // Forms
-#[derive(Deserialize,Serialize,Clone,Validate)]
+#[derive(Deserialize, Serialize, Clone, Validate)]
 pub struct Register {
-    #[validate(
-        length(min = 4, max= 32),
-        does_not_contain(pattern = " ")
-    )]
+    #[validate(length(min = 4, max = 32), does_not_contain(pattern = " "))]
     pub username: String,
     #[validate(
-        length(min = 8, max= 256),
+        length(min = 8, max = 256),
         must_match(other = "password2"),
         does_not_contain(pattern = " ")
     )]
     pub password1: String,
     #[validate(
-        length(min = 8, max= 256), 
+        length(min = 8, max = 256),
         must_match(other = "password1"),
         does_not_contain(pattern = " ")
     )]
     pub password2: String,
 }
 
-#[derive(Deserialize,Serialize,Clone,Validate)]
+#[derive(Deserialize, Serialize, Clone, Validate)]
 pub struct Login {
-    #[validate(
-        length(min = 4, max= 32),
-        does_not_contain(pattern = " ")
-    )]
+    #[validate(length(min = 4, max = 32), does_not_contain(pattern = " "))]
     pub username: String,
-    #[validate(
-        length(min = 8, max= 256),
-        does_not_contain(pattern = " ")
-    )]
+    #[validate(length(min = 8, max = 256), does_not_contain(pattern = " "))]
     pub password: String,
 }
 // ------------------------------------------------
@@ -43,12 +34,18 @@ pub struct Login {
 // ------------------------------------------------
 // JSWToken
 #[derive(Serialize, Deserialize, Clone, Debug, FromRequest)]
-pub struct Account {
+pub struct AccountInfo {
     pub id: i32,
-    pub name: String
+    pub name: String,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct AccountKey {
+    pub id: i32,
+    pub name: String,
+    pub token: String
 }
 // ------------------------------------------------
-
 
 #[cfg(test)]
 mod tests {
@@ -169,5 +166,4 @@ mod tests {
         };
         assert!(form.validate().is_err());
     }
-
 }
