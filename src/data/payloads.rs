@@ -1,4 +1,3 @@
-use actix_jwt_auth_middleware::FromRequest;
 use serde::{Deserialize, Serialize};
 use validator::Validate;
 
@@ -29,14 +28,26 @@ pub struct Login {
     #[validate(length(min = 8, max = 256), does_not_contain(pattern = " "))]
     pub password: String,
 }
+
+#[derive(Deserialize, Serialize, Clone, Validate)]
+pub struct CharactersForm {
+    pub token: String,
+}
+
+#[derive(Deserialize, Serialize, Clone, Validate)]
+pub struct CreateCharacterForm {
+    pub token: String,
+    pub name: String
+}
 // ------------------------------------------------
 
 // ------------------------------------------------
 // JSWToken
-#[derive(Serialize, Deserialize, Clone, Debug, FromRequest)]
+#[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct AccountInfo {
     pub id: i32,
     pub name: String,
+    pub character_id: Option<i32>
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]

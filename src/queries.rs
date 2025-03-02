@@ -63,6 +63,22 @@ pub async fn create_character<T: ToString>(
     .unwrap()
 }
 
+pub async fn fetch_characters(
+    database: &Database,
+    account_id: i32,
+) -> diesel::QueryResult<Vec<CharacterSelect>> {
+    let mut conn = database.get().expect("No database");
+    web::block(move || {
+        use crate::schema::characters::dsl;
+
+        dsl::characters
+            .filter(dsl::account_id.eq(account_id))
+            .get_results(&mut conn)
+    })
+    .await
+    .unwrap()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

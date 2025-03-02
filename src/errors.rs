@@ -13,9 +13,6 @@ pub enum Error {
     #[error("The database query failed")]
     DatabaseError(#[from] diesel::result::Error),
 
-    #[error("Could not create login and refresh tokens")]
-    SigningError(actix_jwt_auth_middleware::AuthError),
-
     #[error("Could not [de]serialize data")]
     SerializationError(#[from] serde_json::Error),
 
@@ -29,12 +26,6 @@ pub enum Error {
 impl From<argon2::password_hash::Error> for Error {
     fn from(value: argon2::password_hash::Error) -> Self {
         Self::PasshwordHashError(value)
-    }
-}
-
-impl From<actix_jwt_auth_middleware::AuthError> for Error {
-    fn from(value: actix_jwt_auth_middleware::AuthError) -> Self {
-        Self::SigningError(value)
     }
 }
 

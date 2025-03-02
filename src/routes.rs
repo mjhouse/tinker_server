@@ -1,4 +1,6 @@
-use crate::data::payloads::AccountKey;
+use std::collections::VecDeque;
+
+use crate::data::payloads::{AccountKey, CharactersForm, CreateCharacterForm};
 use crate::data::messages::*;
 use crate::errors::Result;
 use crate::utilities;
@@ -7,7 +9,53 @@ use crate::{
     queries::{self, Database},
 };
 use actix_web::{get, post, web, HttpRequest, Responder};
+use futures_util::lock::Mutex;
+use futures_util::TryStreamExt;
+use once_cell::sync::Lazy;
 use validator::Validate;
+
+static MESSAGE_QUEUE: Lazy<Mutex<VecDeque<Message>>> = Lazy::new(|| { Default::default() });
+
+#[post("/characters")]
+async fn create_character(
+    pool: web::Data<Database>,
+    form: web::Json<CreateCharacterForm>,
+) -> Result<impl Responder> {
+    // validate the form fields
+    form.validate()?;
+
+    // decode the account information
+    let info: AccountInfo = utilities::token::decode(
+        form.token.clone()
+    )?;
+
+    // fetch all of the characters for the account
+    Ok(web::Json(queries::create_character(
+        &pool,
+        form.name.clone(),
+        info.id
+    ).await?))
+}
+
+#[get("/characters")]
+async fn fetch_characters(
+    pool: web::Data<Database>,
+    form: web::Json<CharactersForm>,
+) -> Result<impl Responder> {
+    // validate the form fields
+    form.validate()?;
+
+    // decode the account information
+    let info: AccountInfo = utilities::token::decode(
+        form.token.clone()
+    )?;
+
+    // fetch all of the characters for the account
+    Ok(web::Json(queries::fetch_characters(
+        &pool, 
+        info.id
+    ).await?))
+}
 
 #[get("/login")]
 async fn login(
@@ -30,6 +78,7 @@ async fn login(
     let token = utilities::token::encode(&AccountInfo {
         id: record.id,
         name: record.username.clone(),
+        character_id: None
     })?;
 
     // return the account information
@@ -59,19 +108,8 @@ async fn register(
     Ok(web::Json(AccountInfo {
         id: record.id,
         name: record.username,
+        character_id: None
     }))
-}
-
-
-
-pub async fn handle_move(database: Database, message: MoveMessage) -> Message {
-    println!("Got MOVE:\n{:?}", message);
-    Message::success("SUCCESS")
-}
-
-pub async fn handle_attack(database: Database, message: AttackMessage) -> Message {
-    println!("Got ATTACK:\n{:?}", message);
-    Message::success("SUCCESS")
 }
 
 #[get("/connect/{token}")]
@@ -81,36 +119,53 @@ pub async fn connect(
     req: HttpRequest,
     body: web::Payload,
 ) -> Result<impl Responder> {
+
+    // TODO: add character id to account info as Option<i32>
     let info: AccountInfo = utilities::token::decode(&info.into_inner())?;
+
+    // TODO: get character id from account info
+    // let character_id = info.character_id.ok_or(Err(Error::NoCharacter))?;
+
     let (response, mut session, mut stream) = actix_ws::handle(&req, body)?;
+
+    // TODO: get the character record (including location)
+    // let mut character = queries::fetch_character(database, character_id)?;
 
     actix_web::rt::spawn(async move {
 
-        // 1. check if there are incoming messages (figure out timeout)
-        //    if there are:
-        //          a. read the message and add to queue (if not heartbeat)
-        //          b. read the message and respond (if heartbeat)
-        //             then save time received.
-        // 2. check if there are outgoing messages (figure out task id)
-        //    if there are:
-        //          a. send them to the connected client
-        // 3. check the time received of the last heartbeat and close
-        //    the connection if it's been too long.
+        // check for incoming messages
+        loop {
+            match stream.try_next().await {
+                // if there are messages waiting add them to queue
+                Ok(Some(actix_ws::Message::Text(text))) => {
+                    if let Ok(message) = Message::from_bytes(text.as_bytes()) {
 
+                        // TODO: update position of character immediately if the message
+                        //       is a movement message.
 
-        while let Some(Ok(actix_ws::Message::Text(msg))) = stream.recv().await {
-            let result = match Message::from_bytes(msg.as_bytes()) {
-                Ok(Message::Move(msg)) => handle_move(pool.get_ref().clone(), msg).await,
-                Ok(Message::Attack(msg)) => handle_attack(pool.get_ref().clone(), msg).await,
-                Ok(Message::Result(_)) => Message::failure("Bad message"),
-                Err(e) => Message::failure(e),
-            };
-
-            if session.text(result.to_string().unwrap()).await.is_err() {
-                return;
+                        MESSAGE_QUEUE.lock().await.push_back(message);
+                    }
+                },
+                // if there was an error, close the session
+                Err(_) => { 
+                    let _ = session.close(None).await; 
+                    break; 
+                }
+                // if Ok(None) or invalid message, ignore
+                _ => break,
             }
         }
-        let _ = session.close(None).await;
+
+        // TODO: get modified records from database around character location
+        //       using: https://github.com/ThinkAlexandria/diesel_geometry
+        // let entities = queries::modified_entities(database, character.position)?;
+
+        // TODO: for each modified record, broadcast them to the client
+        // let data = serde_json::to_string(entities)?;
+        // if session.text(data).await.is_err() {
+        //     return; // and maybe close here?
+        // }
+
     });
 
     Ok(response)
@@ -119,134 +174,237 @@ pub async fn connect(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_utils;
+    use crate::{data::models::CharacterSelect, test_utils};
     use actix_web::{test, App};
     use diesel::pg::PgConnection;
     use diesel::r2d2::ConnectionManager;
     use futures_util::{SinkExt as _, StreamExt as _};
 
-    #[actix_web::test]
-    async fn test_endpoint_register() {
-        let app = test_utils::app!();
+    // mod query {
 
-        let resp = test::call_service(
-            &app,
-            test::TestRequest::post()
-                .uri("/register")
-                .set_json(Register {
-                    username: "TEST".into(),
-                    password1: "PASSWORD".into(),
-                    password2: "PASSWORD".into(),
-                })
-                .to_request(),
-        )
-        .await;
+    //     #[macro_export]
+    //     macro_rules! post {
+    //         ($app: ident, $path: expr, $record: expr) => {
+    //             test::call_service(
+    //                 &$app,
+    //                 test::TestRequest::post()
+    //                     .uri($path)
+    //                     .set_json($record)
+    //                     .to_request(),
+    //             )
+    //             .await
+    //         };
+    //     }
 
-        assert!(resp.status().is_success());
-    }
+    //     #[macro_export]
+    //     macro_rules! get {
+    //         ($app: ident, $path: expr, $record: expr) => {
+    //             test::call_service(
+    //                 &$app,
+    //                 test::TestRequest::get()
+    //                     .uri($path)
+    //                     .set_json($record)
+    //                     .to_request(),
+    //             )
+    //             .await
+    //         };
+    //     }
 
-    #[actix_web::test]
-    async fn test_endpoint_login() {
-        let app = test_utils::app!();
+    //     pub(crate) use post;
+    //     pub(crate) use get;
+    // }
 
-        let resp = test::call_service(
-            &app,
-            test::TestRequest::post()
-                .uri("/register")
-                .set_json(Register {
-                    username: "TEST".into(),
-                    password1: "PASSWORD".into(),
-                    password2: "PASSWORD".into(),
-                })
-                .to_request(),
-        )
-        .await;
+    // mod records {
+    //     use crate::{queries, utilities};
+    //     use crate::{data::models::AccountSelect, queries::Database};
+    //     use crate::errors::Result;
 
-        assert!(resp.status().is_success());
+    //     pub async fn load_account(pool: &Database) -> Result<AccountSelect> {
+    //         let username = "USERNAME";
+    //         let password = utilities::password::hash("PASSWORD")?;
+    //         Ok(queries::create_account(&pool, username, &password).await?)
+    //     }
+    
+        
+    // }
 
-        let body = test::read_body(resp).await;
-        let account: AccountInfo = serde_json::from_slice(&body).unwrap();
-        assert_eq!(account.name,"TEST".to_string());
+    // #[actix_web::test]
+    // async fn test_endpoint_register() {
+    //     let (app,db) = test_utils::setup!();
 
-        let resp = test::call_service(
-            &app,
-            test::TestRequest::get()
-                .uri("/login")
-                .set_json(Login {
-                    username: "TEST".into(),
-                    password: "PASSWORD".into(),
-                })
-                .to_request(),
-        )
-        .await;
+    //     let resp = query::post!(app,"/register",Register {
+    //         username: "USERNAME".into(),
+    //         password1: "PASSWORD".into(),
+    //         password2: "PASSWORD".into(),
+    //     });
 
-        assert!(resp.status().is_success());
+    //     assert!(resp.status().is_success());
 
-        let body = test::read_body(resp).await;
-        let account: AccountKey = serde_json::from_slice(&body).unwrap();
+    //     test_utils::teardown!(db);
+    // }
 
-        assert_eq!(account.name,"TEST".to_string());
-        assert!(account.token.len() > 50);
-    }
+    // #[actix_web::test]
+    // async fn test_endpoint_login() {
+    //     let (app,db) = test_utils::setup!();
+    //     let record = records::load_account(&db).await.unwrap();
 
-    #[actix_web::test]
-    async fn test_endpoint_login_failure() {
-        let app = test_utils::app!();
+    //     let resp = query::get!(app,"/login",Login {
+    //         username: "USERNAME".into(),
+    //         password: "PASSWORD".into(),
+    //     });
 
-        let resp = test::call_service(
-            &app,
-            test::TestRequest::get()
-                .uri("/login")
-                .set_json(Login {
-                    username: "BADNAME".into(),
-                    password: "PASSWORD".into(),
-                })
-                .to_request(),
-        )
-        .await;
+    //     assert!(resp.status().is_success());
 
-        assert!(!resp.status().is_success());
-    }
+    //     let body = test::read_body(resp).await;
+    //     let account: AccountKey = serde_json::from_slice(&body).unwrap();
 
-    #[actix_web::test]
-    async fn test_socket_connect() {
-        let url = dotenv::var("DATABASE_URL").unwrap();
-        let mgr = ConnectionManager::<PgConnection>::new(url);
+    //     assert_eq!(account.name,record.username);
+    //     assert!(account.token.len() > 50);
 
-        let pool = r2d2::Pool::builder()
-            .build(mgr)
-            .expect("could not build connection pool");
+    //     test_utils::teardown!(db);
+    // }
 
-        let mut app = actix_test::start(move ||
-            App::new()
-            .app_data(web::Data::new(pool.clone()))
-            .service(connect)
-        );
+    // #[actix_web::test]
+    // async fn test_endpoint_characters() {
+    //     let (app,_) = test_utils::setup!();
 
-        let url = format!("/connect/{}","TEST");
-        let mut framed = app.ws_at(&url).await.unwrap();
+    //     let resp = test::call_service(
+    //         &app,
+    //         test::TestRequest::post()
+    //             .uri("/register")
+    //             .set_json(Register {
+    //                 username: "TEST".into(),
+    //                 password1: "PASSWORD".into(),
+    //                 password2: "PASSWORD".into(),
+    //             })
+    //             .to_request(),
+    //     )
+    //     .await;
 
-        framed.send(
-            Message::Move(
-                MoveMessage {
-                    token: "".into(),
-                    x: 0.5,
-                    y: 0.5
-                }
-            )
-            .to_message()
-            .unwrap()
-        )
-        .await
-        .unwrap();
+    //     assert!(resp.status().is_success());
 
-        let item = framed.next().await.unwrap().unwrap();
-        dbg!(item);
+    //     let body = test::read_body(resp).await;
+    //     let account: AccountInfo = serde_json::from_slice(&body).unwrap();
+    //     assert_eq!(account.name,"TEST".to_string());
 
-        // framed.send(AXMessage::Text("text2".into())).await.unwrap();
+    //     let resp = test::call_service(
+    //         &app,
+    //         test::TestRequest::get()
+    //             .uri("/login")
+    //             .set_json(Login {
+    //                 username: "TEST".into(),
+    //                 password: "PASSWORD".into(),
+    //             })
+    //             .to_request(),
+    //     )
+    //     .await;
 
-        // let item = framed.next().await.unwrap().unwrap();
-        // dbg!(item);
+    //     assert!(resp.status().is_success());
 
-    }
+    //     let body = test::read_body(resp).await;
+    //     let account: AccountKey = serde_json::from_slice(&body).unwrap();
+
+    //     assert_eq!(account.name,"TEST".to_string());
+    //     assert!(account.token.len() > 50);
+
+    //     // create new charactera
+    //     let resp = test::call_service(
+    //         &app,
+    //         test::TestRequest::post()
+    //             .uri("/characters")
+    //             .set_json(CreateCharacterForm {
+    //                 token: account.token.clone(),
+    //                 name: "NAME".to_string()
+    //             })
+    //             .to_request(),
+    //     )
+    //     .await;
+
+    //     assert!(resp.status().is_success());
+
+    //     let body = test::read_body(resp).await;
+    //     let character: CharacterSelect = serde_json::from_slice(&body).unwrap();
+
+    //     assert_eq!(character.name,"NAME".to_string());
+
+    //     // fetch all characters
+    //     let resp = test::call_service(
+    //         &app,
+    //         test::TestRequest::get()
+    //             .uri("/characters")
+    //             .set_json(CharactersForm {
+    //                 token: account.token.clone(),
+    //             })
+    //             .to_request(),
+    //     )
+    //     .await;
+
+    //     let body = test::read_body(resp).await;
+    //     let characters: Vec<CharacterSelect> = serde_json::from_slice(&body).unwrap();
+
+    //     dbg!(&characters);
+
+    //     assert_eq!(characters.len(),1);
+    // }
+
+    // #[actix_web::test]
+    // async fn test_endpoint_login_failure() {
+    //     let (app,_) = test_utils::setup!();
+
+    //     let resp = test::call_service(
+    //         &app,
+    //         test::TestRequest::get()
+    //             .uri("/login")
+    //             .set_json(Login {
+    //                 username: "BADNAME".into(),
+    //                 password: "PASSWORD".into(),
+    //             })
+    //             .to_request(),
+    //     )
+    //     .await;
+
+    //     assert!(!resp.status().is_success());
+    // }
+
+    // #[actix_web::test]
+    // async fn test_socket_connect() {
+    //     let url = dotenv::var("DATABASE_URL").unwrap();
+    //     let mgr = ConnectionManager::<PgConnection>::new(url);
+
+    //     let pool = r2d2::Pool::builder()
+    //         .build(mgr)
+    //         .expect("could not build connection pool");
+
+    //     let mut app = actix_test::start(move ||
+    //         App::new()
+    //         .app_data(web::Data::new(pool.clone()))
+    //         .service(connect)
+    //     );
+
+    //     let url = format!("/connect/{}","TEST");
+    //     let mut framed = app.ws_at(&url).await.unwrap();
+
+    //     framed.send(
+    //         Message::Move(
+    //             MoveMessage {
+    //                 token: "".into(),
+    //                 x: 0.5,
+    //                 y: 0.5
+    //             }
+    //         )
+    //         .to_message()
+    //         .unwrap()
+    //     )
+    //     .await
+    //     .unwrap();
+
+    //     let item = framed.next().await.unwrap().unwrap();
+    //     dbg!(item);
+
+    //     // framed.send(AXMessage::Text("text2".into())).await.unwrap();
+
+    //     // let item = framed.next().await.unwrap().unwrap();
+    //     // dbg!(item);
+
+    // }
 }

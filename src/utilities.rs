@@ -1,3 +1,22 @@
+use crate::{data::messages::Message, queries::Database};
+use tokio::sync::mpsc;
+
+#[actix_web::main]
+pub async fn process_messages(pool: Database, sender: mpsc::Sender<Message>) {
+
+}
+
+// pub async fn start_processors(pool: Database, sender: mpsc::Sender<Message>, count: usize) -> Vec<std::thread::JoinHandle<()>> {
+//     let mut result = vec![];
+//     for _ in 0..count {
+//         let local_pool = pool.clone();
+//         let local_sender = sender.clone();
+//         result.push(std::thread::spawn(move || {
+//             process_messages(local_pool, local_sender);
+//         }));
+//     }
+//     result
+// }
 
 pub mod token {
     use branca::Branca;
