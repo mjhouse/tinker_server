@@ -180,172 +180,176 @@ mod tests {
     use diesel::r2d2::ConnectionManager;
     use futures_util::{SinkExt as _, StreamExt as _};
 
-    // mod query {
+    mod query {
 
-    //     #[macro_export]
-    //     macro_rules! post {
-    //         ($app: ident, $path: expr, $record: expr) => {
-    //             test::call_service(
-    //                 &$app,
-    //                 test::TestRequest::post()
-    //                     .uri($path)
-    //                     .set_json($record)
-    //                     .to_request(),
-    //             )
-    //             .await
-    //         };
-    //     }
+        #[macro_export]
+        macro_rules! post {
+            ($app: ident, $path: expr, $record: expr) => {
+                test::call_service(
+                    &$app,
+                    test::TestRequest::post()
+                        .uri($path)
+                        .set_json($record)
+                        .to_request(),
+                )
+                .await
+            };
+        }
 
-    //     #[macro_export]
-    //     macro_rules! get {
-    //         ($app: ident, $path: expr, $record: expr) => {
-    //             test::call_service(
-    //                 &$app,
-    //                 test::TestRequest::get()
-    //                     .uri($path)
-    //                     .set_json($record)
-    //                     .to_request(),
-    //             )
-    //             .await
-    //         };
-    //     }
+        #[macro_export]
+        macro_rules! get {
+            ($app: ident, $path: expr, $record: expr) => {
+                test::call_service(
+                    &$app,
+                    test::TestRequest::get()
+                        .uri($path)
+                        .set_json($record)
+                        .to_request(),
+                )
+                .await
+            };
+        }
 
-    //     pub(crate) use post;
-    //     pub(crate) use get;
-    // }
-
-    // mod records {
-    //     use crate::{queries, utilities};
-    //     use crate::{data::models::AccountSelect, queries::Database};
-    //     use crate::errors::Result;
-
-    //     pub async fn load_account(pool: &Database) -> Result<AccountSelect> {
-    //         let username = "USERNAME";
-    //         let password = utilities::password::hash("PASSWORD")?;
-    //         Ok(queries::create_account(&pool, username, &password).await?)
-    //     }
+        pub(crate) use post;
+        pub(crate) use get;
+    }
     
+
+    #[actix_web::test]
+    async fn test_endpoint_register1() {
+        let app = test_utils::setup("test_endpoint_register1").await;
+
+        let resp = query::post!(app,"/register",Register {
+            username: "TEST".into(),
+            password1: "PASSWORD".into(),
+            password2: "PASSWORD".into(),
+        });
+
+        assert!(resp.status().is_success());
+
+        test_utils::teardown("test_endpoint_register1");
+    }
+
+    #[actix_web::test]
+    async fn test_endpoint_register2() {
+        let app = test_utils::setup("test_endpoint_register2").await;
+
+        let resp = query::post!(app,"/register",Register {
+            username: "BAD".into(), // must be >=4 chars
+            password1: "PASSWORD".into(),
+            password2: "PASSWORD".into(),
+        });
+
+        assert!(!resp.status().is_success());
+
+        test_utils::teardown("test_endpoint_register2");
+    }
+
+    #[actix_web::test]
+    async fn test_endpoint_register3() {
+        let app = test_utils::setup("test_endpoint_register3").await;
+
+        let resp = query::post!(app,"/register",Register {
+            username: "USERNAME".into(), // must be unique
+            password1: "PASSWORD".into(),
+            password2: "PASSWORD".into(),
+        });
+
+        assert!(!resp.status().is_success());
+
+        test_utils::teardown("test_endpoint_register3");
+    }
+
+    #[actix_web::test]
+    async fn test_endpoint_login1() {
+        let app = test_utils::setup("test_endpoint_login1").await;
+
+        let resp = query::get!(app,"/login",Login {
+            username: "USERNAME".into(),
+            password: "PASSWORD".into(),
+        });
+
+        assert!(resp.status().is_success());
+
+        let body = test::read_body(resp).await;
+        let account: AccountKey = serde_json::from_slice(&body).unwrap();
+
+        assert_eq!(account.name,"USERNAME");
+        assert!(account.token.len() > 50);
+
+        test_utils::teardown("test_endpoint_login1");
+    }
+
+    #[actix_web::test]
+    async fn test_endpoint_login2() {
+        let app = test_utils::setup("test_endpoint_login2").await;
+
+        // fails because the username doesn't exist
+        let resp = query::get!(app,"/login",Login {
+            username: "BADNAME".into(),
+            password: "PASSWORD".into(),
+        });
+
+        assert!(!resp.status().is_success());
+
+        test_utils::teardown("test_endpoint_login2");
+    }
+
+    #[actix_web::test]
+    async fn test_endpoint_login3() {
+        let app = test_utils::setup("test_endpoint_login3").await;
+
+        // fails because the username doesn't exist
+        let resp = query::get!(app,"/login",Login {
+            username: "USERNAME".into(),
+            password: "BADPASSWORD".into(),
+        });
+
+        assert!(!resp.status().is_success());
+
+        test_utils::teardown("test_endpoint_login3");
+    }
+
+    #[actix_web::test]
+    async fn test_endpoint_create_character() {
+        let app = test_utils::setup("test_endpoint_create_character").await;
+
+        let token = utilities::token::encode(&AccountInfo {
+            id: 1, // default preloaded account
+            name: "USERNAME".into(),
+            character_id: None
+        }).unwrap();
+
+        // create new a character
+        let resp = query::post!(app,"/characters",CreateCharacterForm {
+            token,
+            name: "NAME".to_string()
+        });
         
-    // }
+        assert!(resp.status().is_success());
 
-    // #[actix_web::test]
-    // async fn test_endpoint_register() {
-    //     let (app,db) = test_utils::setup!();
+        test_utils::teardown("test_endpoint_create_character");
+    }
 
-    //     let resp = query::post!(app,"/register",Register {
-    //         username: "USERNAME".into(),
-    //         password1: "PASSWORD".into(),
-    //         password2: "PASSWORD".into(),
-    //     });
+    #[actix_web::test]
+    async fn test_endpoint_fetch_characters() {
+        let app = test_utils::setup("test_endpoint_fetch_characters").await;
 
-    //     assert!(resp.status().is_success());
+        let token = utilities::token::encode(&AccountInfo {
+            id: 1, // default preloaded account
+            name: "USERNAME".into(),
+            character_id: None
+        }).unwrap();
 
-    //     test_utils::teardown!(db);
-    // }
+        // fetch all characters
+        let resp = query::get!(app,"/characters", CharactersForm { token });
 
-    // #[actix_web::test]
-    // async fn test_endpoint_login() {
-    //     let (app,db) = test_utils::setup!();
-    //     let record = records::load_account(&db).await.unwrap();
+        let body = test::read_body(resp).await;
+        let characters: Vec<CharacterSelect> = serde_json::from_slice(&body).unwrap();
+        assert_eq!(characters.len(),1);
 
-    //     let resp = query::get!(app,"/login",Login {
-    //         username: "USERNAME".into(),
-    //         password: "PASSWORD".into(),
-    //     });
-
-    //     assert!(resp.status().is_success());
-
-    //     let body = test::read_body(resp).await;
-    //     let account: AccountKey = serde_json::from_slice(&body).unwrap();
-
-    //     assert_eq!(account.name,record.username);
-    //     assert!(account.token.len() > 50);
-
-    //     test_utils::teardown!(db);
-    // }
-
-    // #[actix_web::test]
-    // async fn test_endpoint_characters() {
-    //     let (app,_) = test_utils::setup!();
-
-    //     let resp = test::call_service(
-    //         &app,
-    //         test::TestRequest::post()
-    //             .uri("/register")
-    //             .set_json(Register {
-    //                 username: "TEST".into(),
-    //                 password1: "PASSWORD".into(),
-    //                 password2: "PASSWORD".into(),
-    //             })
-    //             .to_request(),
-    //     )
-    //     .await;
-
-    //     assert!(resp.status().is_success());
-
-    //     let body = test::read_body(resp).await;
-    //     let account: AccountInfo = serde_json::from_slice(&body).unwrap();
-    //     assert_eq!(account.name,"TEST".to_string());
-
-    //     let resp = test::call_service(
-    //         &app,
-    //         test::TestRequest::get()
-    //             .uri("/login")
-    //             .set_json(Login {
-    //                 username: "TEST".into(),
-    //                 password: "PASSWORD".into(),
-    //             })
-    //             .to_request(),
-    //     )
-    //     .await;
-
-    //     assert!(resp.status().is_success());
-
-    //     let body = test::read_body(resp).await;
-    //     let account: AccountKey = serde_json::from_slice(&body).unwrap();
-
-    //     assert_eq!(account.name,"TEST".to_string());
-    //     assert!(account.token.len() > 50);
-
-    //     // create new charactera
-    //     let resp = test::call_service(
-    //         &app,
-    //         test::TestRequest::post()
-    //             .uri("/characters")
-    //             .set_json(CreateCharacterForm {
-    //                 token: account.token.clone(),
-    //                 name: "NAME".to_string()
-    //             })
-    //             .to_request(),
-    //     )
-    //     .await;
-
-    //     assert!(resp.status().is_success());
-
-    //     let body = test::read_body(resp).await;
-    //     let character: CharacterSelect = serde_json::from_slice(&body).unwrap();
-
-    //     assert_eq!(character.name,"NAME".to_string());
-
-    //     // fetch all characters
-    //     let resp = test::call_service(
-    //         &app,
-    //         test::TestRequest::get()
-    //             .uri("/characters")
-    //             .set_json(CharactersForm {
-    //                 token: account.token.clone(),
-    //             })
-    //             .to_request(),
-    //     )
-    //     .await;
-
-    //     let body = test::read_body(resp).await;
-    //     let characters: Vec<CharacterSelect> = serde_json::from_slice(&body).unwrap();
-
-    //     dbg!(&characters);
-
-    //     assert_eq!(characters.len(),1);
-    // }
+        test_utils::teardown("test_endpoint_fetch_characters");
+    }
 
     // #[actix_web::test]
     // async fn test_endpoint_login_failure() {

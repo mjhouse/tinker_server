@@ -15,34 +15,54 @@ pub mod test_utils {
     use diesel::{r2d2::ConnectionManager, Connection,RunQueryDsl,PgConnection}; 
     use actix_web::{dev::Service, test, web, App};
     use actix_http::Request;
+    use url::Url;
+
+    use crate::{queries::Database, utilities};
     
-    const TEST_DATABASE: &str = "test";
     const MIGRATIONS: EmbeddedMigrations = embed_migrations!("migrations/");
     const SQL: &str = include_str!("../assets/setup.sql");
     
-    pub async fn setup() -> impl Service<Request> {
+    pub async fn pool(database: &str) -> Database {
+        let mut url = Url::parse(&dotenv::var("DATABASE_URL").unwrap()).unwrap();
+        url.set_path(database);
+
+        let mgr = ConnectionManager::<PgConnection>::new(url);
+
+        r2d2::Pool::builder()
+            .build(mgr)
+            .expect("could not build connection pool")
+    }
+
+    pub async fn setup(database: &str) -> impl Service<Request, Response = actix_web::dev::ServiceResponse, Error = actix_web::Error> {
         // get the test database url
         dotenv::dotenv().unwrap();
-        let base = dotenv::var("DATABASE_URL").unwrap();
+
+        let mut base = Url::parse(&dotenv::var("DATABASE_URL").unwrap()).unwrap();
+        base.set_path("");
+        let base = base.to_string();
         let url = format!("{}/postgres", base);
     
         // get a connection to the database/postgres
         let mut conn = PgConnection::establish(&url).expect("Cannot connect to postgres database.");
     
         // create a test database named 'test'
-        let query = diesel::sql_query(&format!("CREATE DATABASE {}", TEST_DATABASE));
-        query.execute(&mut conn).expect(&format!("Could not create database {}", TEST_DATABASE));
+        let query = diesel::sql_query(&format!("CREATE DATABASE {}", database));
+        query.execute(&mut conn).expect(&format!("Could not create database {}", database));
     
         // get a connection to the database/test
-        let url = format!("{}/{}", base, TEST_DATABASE);
+        let url = format!("{}/{}", base, database);
         let mut conn = PgConnection::establish(&url).expect("Cannot connect to test database.");
     
         // run all migrations
         conn.run_pending_migrations(MIGRATIONS).expect("Could not run migrations");
     
+        // create and insert a hashed password
+        let password = utilities::password::hash("PASSWORD").unwrap();
+        let sql = SQL.replace("<PASSWORD>",&password);
+
         // execute assets/setup.sql
-        let query = diesel::sql_query(SQL);
-        query.execute(&mut conn).expect(&format!("Could not create records {}", TEST_DATABASE));
+        let query = diesel::sql_query(sql);
+        query.execute(&mut conn).expect(&format!("Could not create records {}", database));
     
         // build a connection manager for the test database
         let mgr = ConnectionManager::<PgConnection>::new(url);
@@ -64,10 +84,12 @@ pub mod test_utils {
         ).await
     }
     
-    pub fn teardown() {
+    pub fn teardown(database: &str) {
         // get the test database url
         dotenv::dotenv().unwrap();
-        let base = dotenv::var("DATABASE_URL").unwrap();
+        let mut base = Url::parse(&dotenv::var("DATABASE_URL").unwrap()).unwrap();
+        base.set_path("");
+        let base = base.to_string();
         let url = format!("{}/postgres", base);
 
         // get a connection to the database/postgres
@@ -79,7 +101,7 @@ pub mod test_utils {
             SELECT pg_terminate_backend(pid)
             FROM pg_stat_activity
             WHERE datname = '{}';",
-            TEST_DATABASE
+            database
         );
     
         // drop the 'test' database
@@ -87,70 +109,18 @@ pub mod test_utils {
             .execute(&mut conn)
             .unwrap();
     
-        let query = diesel::sql_query(&format!("DROP DATABASE {}", TEST_DATABASE));
+        let query = diesel::sql_query(&format!("DROP DATABASE {}", database));
         query
             .execute(&mut conn)
-            .expect(&format!("Couldn't drop database {}", TEST_DATABASE));
+            .expect(&format!("Couldn't drop database {}", database));
     }
 
     #[actix_web::test]
     async fn test_database_setup() {
-        let app = setup().await;
+        let app = setup("test_database_setup").await;
+        teardown("test_database_setup");
     }
 
-    // /*
-    //     This macro needs to stay synchronized with the main
-    //     function below. They should both have the same endpoints,
-    //     data, and database connections (unless a different database
-    //     is being used for testing). 
-    // */
-    // #[macro_export]
-    // macro_rules! setup {
-    //     () => {{
-    //         dotenv::dotenv().unwrap();
-
-    //         let url = dotenv::var("DATABASE_URL").unwrap();
-    //         let mgr = ConnectionManager::<PgConnection>::new(url);
-
-    //         let pool = r2d2::Pool::builder()
-    //             .build(mgr)
-    //             .expect("could not build connection pool");
-
-    //         let app = test::init_service(
-    //             App::new()
-    //                 .app_data(web::Data::new(pool.clone()))
-    //                 .service(crate::routes::login)
-    //                 .service(crate::routes::register)
-    //                 .service(crate::routes::create_character)
-    //                 .service(crate::routes::fetch_characters)
-    //                 .service(crate::routes::connect)
-    //         )
-    //         .await;
-
-    //         (app,pool)
-    //     }};
-    // }
-
-    // /*
-    //     These tables need to be in reverse order of relationships so
-    //     that deleting one doesn't fail due to foreign key references
-    // */
-    // #[macro_export]
-    // macro_rules! teardown {
-    //     ($pool: ident) => {{
-    //         use diesel::RunQueryDsl;
-    //         let mut conn = $pool.get().expect("No database");
-    //         diesel::delete(crate::schema::join_character_abilities::table).execute(&mut conn).unwrap();
-    //         diesel::delete(crate::schema::join_character_items::table).execute(&mut conn).unwrap();
-    //         diesel::delete(crate::schema::items::table).execute(&mut conn).unwrap();
-    //         diesel::delete(crate::schema::abilities::table).execute(&mut conn).unwrap();
-    //         diesel::delete(crate::schema::characters::table).execute(&mut conn).unwrap();
-    //         diesel::delete(crate::schema::accounts::table).execute(&mut conn).unwrap();
-    //     }};
-    // }
-
-    // pub(crate) use setup;
-    // pub(crate) use teardown;
 }
 
 #[actix_web::main]

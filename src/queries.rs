@@ -81,45 +81,39 @@ pub async fn fetch_characters(
 
 #[cfg(test)]
 mod tests {
+    use crate::test_utils;
+
     use super::*;
-
-    macro_rules! testdb {
-        () => {{
-            let url = dotenv::var("DATABASE_URL").unwrap();
-            let mgr = ConnectionManager::<PgConnection>::new(url);
-
-            r2d2::Pool::builder()
-                .build(mgr)
-                .expect("could not build connection pool")
-        }};
-    }
 
     #[actix_web::test]
     async fn test_create_account() {
-        let pool = testdb!();
+        let database = "test_create_account";
+        test_utils::setup(database).await;
+        let pool = test_utils::pool(database).await;
 
-        let result = create_account(&pool, "USERNAME", "PASSWORD").await;
+        let result = create_account(&pool, "TEST", "PASSWORD").await;
         assert!(result.is_ok());
 
         let record = result.unwrap();
-        assert_eq!(record.username, "USERNAME");
+        assert_eq!(record.username, "TEST");
         assert_eq!(record.password, "PASSWORD");
+
+        test_utils::teardown(database);
     }
 
     #[actix_web::test]
     async fn test_create_character() {
-        let pool = testdb!();
+        let database = "test_create_character";
+        test_utils::setup(database).await;
+        let pool = test_utils::pool(database).await;
 
-        let result = create_account(&pool, "USERNAME", "PASSWORD").await;
-        assert!(result.is_ok());
-
-        let account = result.unwrap();
-
-        let result = create_character(&pool, "NAME", account.id).await;
+        let result = create_character(&pool, "NAME", 1).await;
         assert!(result.is_ok());
 
         let record = result.unwrap();
         assert_eq!(record.name, "NAME");
-        assert_eq!(record.account_id, account.id);
+        assert_eq!(record.account_id, 1);
+
+        test_utils::teardown(database);
     }
 }
