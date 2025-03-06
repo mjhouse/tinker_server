@@ -33,7 +33,7 @@ pub struct CharacterInsert {
     pub account_id: i32,
 }
 
-#[derive(Queryable, Selectable, Serialize, Deserialize, Debug)]
+#[derive(Queryable, Selectable, Clone, Serialize, Deserialize, Debug)]
 #[diesel(table_name = crate::schema::characters)]
 #[diesel(check_for_backend(diesel::pg::Pg))]
 pub struct CharacterSelect {
@@ -41,6 +41,8 @@ pub struct CharacterSelect {
     pub name: String,
     pub created: DateTime<Utc>,
     pub account_id: i32,
+    pub x: f32,
+    pub y: f32,
 }
 // ------------------------------------------------
 

@@ -79,6 +79,24 @@ pub async fn fetch_characters(
     .unwrap()
 }
 
+pub async fn fetch_character(
+    database: &Database,
+    account_id: i32,
+    character_id: i32,
+) -> diesel::QueryResult<CharacterSelect> {
+    let mut conn = database.get().expect("No database");
+    web::block(move || {
+        use crate::schema::characters::dsl;
+
+        dsl::characters
+            .filter(dsl::account_id.eq(account_id))
+            .filter(dsl::id.eq(character_id))
+            .get_result(&mut conn)
+    })
+    .await
+    .unwrap()
+}
+
 #[cfg(test)]
 mod tests {
     use crate::test_utils;

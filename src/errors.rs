@@ -21,6 +21,9 @@ pub enum Error {
 
     #[error("Failed while processing the request")]
     WebServerError(#[from] actix_web::Error),
+
+    #[error("No character currently selected")]
+    NoCharacter,
 }
 
 impl From<argon2::password_hash::Error> for Error {

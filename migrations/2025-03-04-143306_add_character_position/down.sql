@@ -1,0 +1,3 @@
+
+ALTER TABLE characters DROP COLUMN x;
+ALTER TABLE characters DROP COLUMN y;

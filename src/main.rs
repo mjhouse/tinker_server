@@ -80,6 +80,7 @@ pub mod test_utils {
                 .service(crate::routes::register)
                 .service(crate::routes::create_character)
                 .service(crate::routes::fetch_characters)
+                .service(crate::routes::select_character)
                 .service(crate::routes::connect)
         ).await
     }
@@ -117,7 +118,7 @@ pub mod test_utils {
 
     #[actix_web::test]
     async fn test_database_setup() {
-        let app = setup("test_database_setup").await;
+        let _ = setup("test_database_setup").await;
         teardown("test_database_setup");
     }
 
@@ -143,6 +144,7 @@ async fn main() -> std::io::Result<()> {
             .service(routes::register)
             .service(routes::create_character)
             .service(routes::fetch_characters)
+            .service(routes::select_character)
             .service(routes::connect)
     })
     .bind(("127.0.0.1", 8080))?

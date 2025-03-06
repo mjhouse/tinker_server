@@ -1,8 +1,9 @@
 use std::collections::VecDeque;
 
-use crate::data::payloads::{AccountKey, CharactersForm, CreateCharacterForm};
+use crate::data::payloads::{AccountKey, CreateCharacterForm, FetchCharactersForm, SelectCharacterForm};
 use crate::data::messages::*;
-use crate::errors::Result;
+use crate::errors::{Error, Result};
+use crate::schema::characters::account_id;
 use crate::utilities;
 use crate::{
     data::payloads::{AccountInfo, Login, Register},
@@ -40,7 +41,7 @@ async fn create_character(
 #[get("/characters")]
 async fn fetch_characters(
     pool: web::Data<Database>,
-    form: web::Json<CharactersForm>,
+    form: web::Json<FetchCharactersForm>,
 ) -> Result<impl Responder> {
     // validate the form fields
     form.validate()?;
@@ -57,6 +58,38 @@ async fn fetch_characters(
     ).await?))
 }
 
+#[get("/character")]
+async fn select_character(
+    pool: web::Data<Database>,
+    form: web::Json<SelectCharacterForm>,
+) -> Result<impl Responder> {
+    // validate the form fields
+    form.validate()?;
+
+    // decode the account information
+    let mut info: AccountInfo = utilities::token::decode(
+        form.token.clone()
+    )?;
+
+    // make sure the character actually exists
+    let character = queries::fetch_character(
+        &pool, 
+        info.id,
+        form.character_id
+    ).await?;
+
+    // update the character id for the session
+    info.character_id = Some(character.id);
+
+    let token = utilities::token::encode(&info)?;
+
+    Ok(web::Json(AccountKey {
+        id: info.id,
+        name: info.name,
+        token: token,
+    }))
+}
+
 #[get("/login")]
 async fn login(
     pool: web::Data<Database>,
@@ -69,22 +102,28 @@ async fn login(
     let password = form.password.clone();
 
     // fetch the database record by username
-    let record = queries::fetch_account(&pool, username).await?;
+    let account = queries::fetch_account(&pool, username).await?;
+
+    let character = queries::fetch_characters(&pool, account.id).await?
+        .iter()
+        .next()
+        .cloned()
+        .ok_or(Error::NoCharacter)?;
 
     // validate the password hash
-    utilities::password::valid(record.password, password)?;
+    utilities::password::valid(account.password, password)?;
 
     // create an authentication token from the account
     let token = utilities::token::encode(&AccountInfo {
-        id: record.id,
-        name: record.username.clone(),
-        character_id: None
+        id: account.id,
+        name: account.username.clone(),
+        character_id: Some(character.id)
     })?;
 
     // return the account information
     Ok(web::Json(AccountKey {
-        id: record.id,
-        name: record.username,
+        id: account.id,
+        name: account.username,
         token: token,
     }))
 }
@@ -94,6 +133,10 @@ async fn register(
     pool: web::Data<Database>, 
     form: web::Json<Register>
 ) -> Result<impl Responder> {
+
+    println!("IN REGISTER");
+    dbg!(&form);
+
     // validate the form fields
     form.validate()?;
 
@@ -102,34 +145,32 @@ async fn register(
     let password = utilities::password::hash(form.password1.clone())?;
 
     // create the database record
-    let record = queries::create_account(&pool, username, password).await?;
+    let account = queries::create_account(&pool, username, password).await?;
+    let character = queries::create_character(&pool, account.username.clone(), account.id).await?;
 
     // return the account information
     Ok(web::Json(AccountInfo {
-        id: record.id,
-        name: record.username,
-        character_id: None
+        id: account.id,
+        name: account.username,
+        character_id: Some(character.id)
     }))
 }
 
 #[get("/connect/{token}")]
 pub async fn connect(
     pool: web::Data<Database>,
-    info: web::Path<String>,
+    token: web::Path<String>,
     req: HttpRequest,
     body: web::Payload,
 ) -> Result<impl Responder> {
 
-    // TODO: add character id to account info as Option<i32>
-    let info: AccountInfo = utilities::token::decode(&info.into_inner())?;
-
-    // TODO: get character id from account info
-    // let character_id = info.character_id.ok_or(Err(Error::NoCharacter))?;
+    // get the character information for the connecting account
+    let info: AccountInfo = utilities::token::decode(&token.into_inner())?;
+    let character_id = info.character_id.ok_or(Error::NoCharacter)?;
+    let mut character = queries::fetch_character(&pool, info.id, character_id).await?;
 
     let (response, mut session, mut stream) = actix_ws::handle(&req, body)?;
 
-    // TODO: get the character record (including location)
-    // let mut character = queries::fetch_character(database, character_id)?;
 
     actix_web::rt::spawn(async move {
 
@@ -139,11 +180,13 @@ pub async fn connect(
                 // if there are messages waiting add them to queue
                 Ok(Some(actix_ws::Message::Text(text))) => {
                     if let Ok(message) = Message::from_bytes(text.as_bytes()) {
-
-                        // TODO: update position of character immediately if the message
-                        //       is a movement message.
-
-                        MESSAGE_QUEUE.lock().await.push_back(message);
+                        if let Message::Move(m) = message {
+                            character.x = m.x;
+                            character.y = m.y;
+                            MESSAGE_QUEUE.lock().await.push_back(Message::Move(m));
+                        } else {
+                            MESSAGE_QUEUE.lock().await.push_back(message);
+                        }
                     }
                 },
                 // if there was an error, close the session
@@ -299,7 +342,7 @@ mod tests {
     async fn test_endpoint_login3() {
         let app = test_utils::setup("test_endpoint_login3").await;
 
-        // fails because the username doesn't exist
+        // fails because the password is wrong
         let resp = query::get!(app,"/login",Login {
             username: "USERNAME".into(),
             password: "BADPASSWORD".into(),
@@ -342,7 +385,7 @@ mod tests {
         }).unwrap();
 
         // fetch all characters
-        let resp = query::get!(app,"/characters", CharactersForm { token });
+        let resp = query::get!(app,"/characters", FetchCharactersForm { token });
 
         let body = test::read_body(resp).await;
         let characters: Vec<CharacterSelect> = serde_json::from_slice(&body).unwrap();
@@ -351,24 +394,30 @@ mod tests {
         test_utils::teardown("test_endpoint_fetch_characters");
     }
 
-    // #[actix_web::test]
-    // async fn test_endpoint_login_failure() {
-    //     let (app,_) = test_utils::setup!();
+    #[actix_web::test]
+    async fn test_endpoint_select_character() {
+        let app = test_utils::setup("test_endpoint_select_character").await;
 
-    //     let resp = test::call_service(
-    //         &app,
-    //         test::TestRequest::get()
-    //             .uri("/login")
-    //             .set_json(Login {
-    //                 username: "BADNAME".into(),
-    //                 password: "PASSWORD".into(),
-    //             })
-    //             .to_request(),
-    //     )
-    //     .await;
+        let token = utilities::token::encode(&AccountInfo {
+            id: 1, // default preloaded account
+            name: "USERNAME".into(),
+            character_id: None
+        }).unwrap();
 
-    //     assert!(!resp.status().is_success());
-    // }
+        // get updated token with character selected
+        let resp = query::get!(app,"/character", SelectCharacterForm { 
+            token,
+            character_id: 1 // default preloaded character 
+        });
+        
+        let body = test::read_body(resp).await;
+        let key: AccountKey = serde_json::from_slice(&body).unwrap();
+        let info: AccountInfo = utilities::token::decode(key.token).unwrap();
+
+        dbg!(info);
+
+        test_utils::teardown("test_endpoint_select_character");
+    }
 
     // #[actix_web::test]
     // async fn test_socket_connect() {

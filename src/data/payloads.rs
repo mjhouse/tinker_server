@@ -3,7 +3,7 @@ use validator::Validate;
 
 // ------------------------------------------------
 // Forms
-#[derive(Deserialize, Serialize, Clone, Validate)]
+#[derive(Deserialize, Serialize, Clone, Debug, Validate)]
 pub struct Register {
     #[validate(length(min = 4, max = 32), does_not_contain(pattern = " "))]
     pub username: String,
@@ -30,14 +30,20 @@ pub struct Login {
 }
 
 #[derive(Deserialize, Serialize, Clone, Validate)]
-pub struct CharactersForm {
+pub struct CreateCharacterForm {
+    pub token: String,
+    pub name: String
+}
+
+#[derive(Deserialize, Serialize, Clone, Validate)]
+pub struct FetchCharactersForm {
     pub token: String,
 }
 
 #[derive(Deserialize, Serialize, Clone, Validate)]
-pub struct CreateCharacterForm {
+pub struct SelectCharacterForm {
     pub token: String,
-    pub name: String
+    pub character_id: i32
 }
 // ------------------------------------------------
 

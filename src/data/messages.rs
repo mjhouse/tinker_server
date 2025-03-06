@@ -34,8 +34,8 @@ impl Message {
 #[derive(Serialize, Deserialize, Debug)]
 pub struct MoveMessage {
     pub token: String,
-    pub x: f64,
-    pub y: f64,
+    pub x: f32,
+    pub y: f32,
 }
 
 #[derive(Serialize, Deserialize, Debug)]
