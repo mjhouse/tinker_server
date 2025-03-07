@@ -1,6 +1,7 @@
 use diesel::{r2d2::ConnectionManager, PgConnection};
 use actix_web::{web, App, HttpServer};
 use dotenv;
+use utilities::process_messages;
 
 mod data;
 mod errors;
@@ -134,6 +135,9 @@ async fn main() -> std::io::Result<()> {
     let pool = r2d2::Pool::builder()
         .build(mgr)
         .expect("could not build connection pool");
+
+    // start the message processing background task
+    process_messages(pool.clone());
 
     // TODO: use the configure method to add resources and abstract
     //       app construction into a standalone method: https://docs.rs/actix-web/latest/actix_web/struct.App.html#method.configure

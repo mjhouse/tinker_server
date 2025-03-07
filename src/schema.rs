@@ -24,6 +24,7 @@ diesel::table! {
         account_id -> Int4,
         x -> Float4,
         y -> Float4,
+        modified -> Timestamptz,
     }
 }
 

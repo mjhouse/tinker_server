@@ -1,22 +1,60 @@
+use std::time::Duration;
+
+use tokio::signal::unix::{signal, SignalKind};
+use tokio::task;
+
+use crate::data::payloads::AccountInfo;
+use crate::queries;
 use crate::{data::messages::Message, queries::Database};
-use tokio::sync::mpsc;
+use crate::routes::INCOMING_QUEUE;
 
-#[actix_web::main]
-pub async fn process_messages(pool: Database, sender: mpsc::Sender<Message>) {
+pub fn process_messages(pool: Database) {
+    actix_web::rt::spawn(async {
 
+        let canceled_task = tokio::signal::ctrl_c();
+    
+        let terminate_task = async {
+            signal(SignalKind::terminate())
+                .expect("failed to install SIGTERM handler")
+                .recv()
+                .await;
+        };
+    
+        let processer_task = async move {
+            loop {
+                task::yield_now().await;
+                match INCOMING_QUEUE.lock().await.pop_front() {
+                    Some(Message::Move(m)) => {
+                        
+                        if let Ok(info) = token::decode::<AccountInfo,String>(m.token) {
+
+                            let id = info.character_id.unwrap();
+                            println!("{} -> ({},{})",id,m.x,m.y);
+
+                            queries::update_entity(
+                                &pool, 
+                                id, 
+                                m.x, 
+                                m.y
+                            ).await;
+                        }
+
+                    },
+                    Some(Message::Attack(m)) => {
+        
+                    },
+                    _ => ()
+                }
+            }
+        };
+        
+        tokio::select! {
+            _ = canceled_task => println!("Received Ctrl+C"),
+            _ = terminate_task => println!("Received SIGTERM"),
+            _ = processer_task => ()
+        };
+    });
 }
-
-// pub async fn start_processors(pool: Database, sender: mpsc::Sender<Message>, count: usize) -> Vec<std::thread::JoinHandle<()>> {
-//     let mut result = vec![];
-//     for _ in 0..count {
-//         let local_pool = pool.clone();
-//         let local_sender = sender.clone();
-//         result.push(std::thread::spawn(move || {
-//             process_messages(local_pool, local_sender);
-//         }));
-//     }
-//     result
-// }
 
 pub mod token {
     use branca::Branca;

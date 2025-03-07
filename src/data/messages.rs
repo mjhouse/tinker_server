@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-#[derive(Serialize, Deserialize, Debug)]
+#[derive(Clone, Serialize, Deserialize, Debug)]
 pub enum Message {
     Move(MoveMessage),
     Attack(AttackMessage),
@@ -31,21 +31,21 @@ impl Message {
     }
 }
 
-#[derive(Serialize, Deserialize, Debug)]
+#[derive(Clone, Serialize, Deserialize, Debug)]
 pub struct MoveMessage {
     pub token: String,
     pub x: f32,
     pub y: f32,
 }
 
-#[derive(Serialize, Deserialize, Debug)]
+#[derive(Clone, Serialize, Deserialize, Debug)]
 pub struct AttackMessage {
     pub token: String,
     pub target: i32,
     pub ability: i32,
 }
 
-#[derive(Serialize, Deserialize, Debug)]
+#[derive(Clone, Serialize, Deserialize, Debug)]
 pub struct ResultMessage {
     pub error: bool,
     pub text: String,

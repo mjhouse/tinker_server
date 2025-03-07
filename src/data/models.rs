@@ -43,6 +43,7 @@ pub struct CharacterSelect {
     pub account_id: i32,
     pub x: f32,
     pub y: f32,
+    pub modified: DateTime<Utc>,
 }
 // ------------------------------------------------
 

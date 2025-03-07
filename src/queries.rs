@@ -1,5 +1,6 @@
 use crate::data::models::{AccountInsert, AccountSelect, CharacterInsert, CharacterSelect};
 use actix_web::web;
+use chrono::{DateTime, Utc};
 use diesel::pg::PgConnection;
 use diesel::r2d2::ConnectionManager;
 use diesel::ExpressionMethods;
@@ -92,6 +93,44 @@ pub async fn fetch_character(
             .filter(dsl::account_id.eq(account_id))
             .filter(dsl::id.eq(character_id))
             .get_result(&mut conn)
+    })
+    .await
+    .unwrap()
+}
+
+pub async fn modified_entities(
+    database: &Database,
+    character_id: i32, 
+    timestamp: DateTime<Utc>
+) -> diesel::QueryResult<Vec<CharacterSelect>> {
+    let mut conn = database.get().expect("No database");
+    web::block(move || {
+        use crate::schema::characters::dsl;
+
+        dsl::characters
+            // .filter(dsl::id.eq(character_id))
+            .filter(dsl::modified.gt(timestamp))
+            .get_results(&mut conn)
+    })
+    .await
+    .unwrap()
+}
+
+pub async fn update_entity(
+    database: &Database,
+    character_id: i32,
+    x: f32,
+    y: f32,
+) {
+    let mut conn = database.get().expect("No database");
+    web::block(move || {
+        use crate::schema::characters::dsl;
+
+        diesel::update(dsl::characters
+            .filter(dsl::id.eq(character_id)))
+            .set((dsl::x.eq(x),dsl::y.eq(y)))
+            .execute(&mut conn)
+            .unwrap();
     })
     .await
     .unwrap()

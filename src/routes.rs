@@ -1,21 +1,23 @@
 use std::collections::VecDeque;
+use std::time::Duration;
 
 use crate::data::payloads::{AccountKey, CreateCharacterForm, FetchCharactersForm, SelectCharacterForm};
 use crate::data::messages::*;
 use crate::errors::{Error, Result};
-use crate::schema::characters::account_id;
 use crate::utilities;
 use crate::{
     data::payloads::{AccountInfo, Login, Register},
     queries::{self, Database},
 };
 use actix_web::{get, post, web, HttpRequest, Responder};
+use chrono::{DateTime, TimeDelta, Utc};
 use futures_util::lock::Mutex;
-use futures_util::TryStreamExt;
+use futures_util::{StreamExt, TryStreamExt};
 use once_cell::sync::Lazy;
+use tokio::time::sleep;
 use validator::Validate;
 
-static MESSAGE_QUEUE: Lazy<Mutex<VecDeque<Message>>> = Lazy::new(|| { Default::default() });
+pub static INCOMING_QUEUE: Lazy<Mutex<VecDeque<Message>>> = Lazy::new(|| { Default::default() });
 
 #[post("/characters")]
 async fn create_character(
@@ -134,9 +136,6 @@ async fn register(
     form: web::Json<Register>
 ) -> Result<impl Responder> {
 
-    println!("IN REGISTER");
-    dbg!(&form);
-
     // validate the form fields
     form.validate()?;
 
@@ -163,52 +162,101 @@ pub async fn connect(
     req: HttpRequest,
     body: web::Payload,
 ) -> Result<impl Responder> {
-
+    
     // get the character information for the connecting account
     let info: AccountInfo = utilities::token::decode(&token.into_inner())?;
     let character_id = info.character_id.ok_or(Error::NoCharacter)?;
-    let mut character = queries::fetch_character(&pool, info.id, character_id).await?;
 
     let (response, mut session, mut stream) = actix_ws::handle(&req, body)?;
 
-
     actix_web::rt::spawn(async move {
 
-        // check for incoming messages
+        let mut timestamp: DateTime<Utc> = Utc::now();
+
         loop {
-            match stream.try_next().await {
-                // if there are messages waiting add them to queue
-                Ok(Some(actix_ws::Message::Text(text))) => {
-                    if let Ok(message) = Message::from_bytes(text.as_bytes()) {
-                        if let Message::Move(m) = message {
-                            character.x = m.x;
-                            character.y = m.y;
-                            MESSAGE_QUEUE.lock().await.push_back(Message::Move(m));
-                        } else {
-                            MESSAGE_QUEUE.lock().await.push_back(message);
-                        }
+            // create timeout and stream futures
+            let timeout = sleep(Duration::from_millis(100));
+            let source = stream.next();
+
+            // create a combined future that waits for either
+            // the next message or a timeout, whichever is sooner.
+            let result = tokio::select! {
+                message = source => message,
+                _ = timeout => None
+            };
+
+            // handle incoming messages
+            match result {
+                Some(Ok(actix_ws::Message::Text(text))) => {
+                    if let Ok(m) = Message::from_bytes(text.as_bytes()) {
+                        INCOMING_QUEUE.lock().await.push_back(m);
                     }
                 },
-                // if there was an error, close the session
-                Err(_) => { 
+                Some(Ok(actix_ws::Message::Binary(_))) => {
                     let _ = session.close(None).await; 
-                    break; 
+                    break;
+                },
+                Some(Ok(actix_ws::Message::Continuation(_))) => {
+                    let _ = session.close(None).await; 
+                    break;
+                },
+                Some(Ok(actix_ws::Message::Ping(_))) => {
+                    let _ = session.close(None).await; 
+                    break;
+                },
+                Some(Ok(actix_ws::Message::Pong(_))) => {
+                    let _ = session.close(None).await; 
+                    break;
+                },
+                Some(Ok(actix_ws::Message::Close(_))) => {
+                    let _ = session.close(None).await; 
+                    break;
+                },
+                Some(Ok(actix_ws::Message::Nop)) => {
+                    let _ = session.close(None).await; 
+                    break;
+                },
+                Some(Err(_)) => {
+                    let _ = session.close(None).await; 
+                    break;                    
+                },
+                None => ()
+            }
+
+            // get modified entities within distance of character
+            let entities = queries::modified_entities(
+                &pool,
+                character_id,
+                timestamp
+            ).await.unwrap_or_default();
+
+            // update the timestamp, offset into the past
+            timestamp = Utc::now()
+                .checked_sub_signed(TimeDelta::milliseconds(100))
+                .unwrap_or(Utc::now());
+
+            for entity in entities {
+
+                if entity.id == character_id {
+                    continue;
                 }
-                // if Ok(None) or invalid message, ignore
-                _ => break,
+
+                println!("{} <- ({},{} for {})",character_id,entity.x,entity.y,entity.id);
+
+                // build move message for each modified entity
+                let message = serde_json::to_string(&Message::Move(MoveMessage {
+                    token: "".into(),
+                    x: entity.x,
+                    y: entity.y,
+                }));
+
+                if let Ok(data) = message {
+                    if session.text(data).await.is_err() {
+                        // TODO: log failure and maybe disconnect
+                    }
+                }
             }
         }
-
-        // TODO: get modified records from database around character location
-        //       using: https://github.com/ThinkAlexandria/diesel_geometry
-        // let entities = queries::modified_entities(database, character.position)?;
-
-        // TODO: for each modified record, broadcast them to the client
-        // let data = serde_json::to_string(entities)?;
-        // if session.text(data).await.is_err() {
-        //     return; // and maybe close here?
-        // }
-
     });
 
     Ok(response)
