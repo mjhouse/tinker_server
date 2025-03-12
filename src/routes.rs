@@ -1,6 +1,8 @@
-use std::collections::VecDeque;
+use std::collections::{HashMap, HashSet, VecDeque};
+use std::hash::{DefaultHasher, Hash, Hasher};
 use std::time::Duration;
 
+use crate::data::models::CharacterSelect;
 use crate::data::payloads::{AccountKey, CreateCharacterForm, FetchCharactersForm, SelectCharacterForm};
 use crate::data::messages::*;
 use crate::errors::{Error, Result};
@@ -10,14 +12,88 @@ use crate::{
     queries::{self, Database},
 };
 use actix_web::{get, post, web, HttpRequest, Responder};
-use chrono::{DateTime, TimeDelta, Utc};
 use futures_util::lock::Mutex;
-use futures_util::{StreamExt, TryStreamExt};
+use futures_util::StreamExt;
+use futures_util::stream;
 use once_cell::sync::Lazy;
 use tokio::time::sleep;
+use uuid::Uuid;
 use validator::Validate;
 
 pub static INCOMING_QUEUE: Lazy<Mutex<VecDeque<Message>>> = Lazy::new(|| { Default::default() });
+pub static OUTGOING_QUEUE: Lazy<Mutex<VecDeque<Message>>> = Lazy::new(|| { Default::default() });
+pub static DATABASE_QUEUE: Lazy<Mutex<VecDeque<Message>>> = Lazy::new(|| { Default::default() });
+
+// TODO: merge USERS and REGISTRY. They should both just use the account id.
+pub static REGISTRY: Lazy<Mutex<HashMap<i32,AccountInfo>>> = Lazy::new(|| { Default::default() });
+pub static VIEWED: Lazy<Mutex<HashMap<Uuid,Vec<i32>>>> = Lazy::new(|| { Default::default() });
+
+async fn get_initial(pool: &Database, account: AccountInfo) -> Vec<CharacterSelect> {
+    let connected = REGISTRY
+        .lock()
+        .await
+        .values()
+        .filter_map(|a| a.character_id.clone())
+        .collect::<Vec<i32>>();
+    queries::local_entities(pool, account.character_id.unwrap(), connected).await.unwrap_or_default()
+}
+
+pub async fn register_handler(account: AccountInfo) -> i32 {
+    println!("{} REGISTERED",account.id);
+    REGISTRY.lock().await.insert(account.id,account.clone());
+    account.id
+}
+
+pub async fn unregister_handler(id: i32) {
+    println!("{} UNREGISTERED",id);
+    REGISTRY.lock().await.remove(&id);
+}
+
+pub async fn registered_handler(account_id: i32) -> bool {
+    REGISTRY.lock().await.contains_key(&account_id)
+}
+
+// mark a message as viewed by a particular handler
+pub async fn set_viewed(account_id: i32, message_id: Uuid) {
+    VIEWED.lock().await
+        .entry(message_id)
+        .or_insert_with(Vec::new)
+        .push(account_id);
+}
+
+// check if a message is viewed by a particular handler
+pub async fn get_viewed(account_id: i32, message_id: Uuid) -> bool {
+    VIEWED.lock().await
+        .entry(message_id)
+        .or_insert_with(Vec::new)
+        .contains(&account_id)
+}
+
+// check if the message has been viewed by all handlers
+pub async fn all_viewed(message_id: Uuid) -> bool {
+    let viewed = VIEWED.lock().await;
+    REGISTRY.lock().await
+        .keys()
+        .all(|item| viewed
+            .get(&message_id)
+            .map(|v| v.contains(item))
+            .unwrap_or(false))
+}
+
+// read all un-viewed messages for a particular handler (and set viewed)
+pub async fn read_messages(account_id: i32) -> Vec<Message> {
+    stream::iter(OUTGOING_QUEUE.lock().await.iter())
+        .filter_map(|item| async move {
+            if !get_viewed(account_id, item.id()).await {
+                set_viewed(account_id, item.id()).await;
+                Some(item.clone())
+            } else {
+                None
+            }
+        })
+        .collect::<Vec<_>>()
+        .await
+}
 
 #[post("/characters")]
 async fn create_character(
@@ -157,21 +233,60 @@ async fn register(
 
 #[get("/connect/{token}")]
 pub async fn connect(
-    pool: web::Data<Database>,
+    pool: web::Data<Database>, 
     token: web::Path<String>,
     req: HttpRequest,
     body: web::Payload,
 ) -> Result<impl Responder> {
     
-    // get the character information for the connecting account
-    let info: AccountInfo = utilities::token::decode(&token.into_inner())?;
-    let character_id = info.character_id.ok_or(Error::NoCharacter)?;
-
     let (response, mut session, mut stream) = actix_ws::handle(&req, body)?;
 
     actix_web::rt::spawn(async move {
 
-        let mut timestamp: DateTime<Utc> = Utc::now();
+        // keep track of incoming messages so we don't send back 
+        // the messages we received.
+        let mut messages: HashSet<Uuid> = HashSet::new();
+
+        // decode the login token to get basic account information
+        let account: AccountInfo = utilities::token::decode(token.to_string())
+            .expect("Could not decode token");
+
+        let character: CharacterSelect = queries::fetch_character(
+            &pool, 
+            account.id, 
+            account.character_id.expect("No character id")
+        ).await.expect("Could not find character");
+    
+        // the id for this particular connection
+        let handler_id = register_handler(account.clone()).await;
+
+        // 1. get current records for entities that are-
+        //      - connected
+        //      - in range
+        let entities = get_initial(&pool,account.clone()).await;
+        
+        // 2. build an "InitialState" message for the client
+        let item = Message::Initial(InitialMessage {
+            token: token.clone(),
+            id: Uuid::now_v7(),
+            entities
+        });
+
+        // 3. send the initial state message to the client
+        if let Ok(data) = serde_json::to_string(&item) {
+            let _ = session.text(data).await.map_err(|_| {
+                // TODO: log failure and maybe disconnect
+            });
+        }
+
+        let id = Uuid::now_v7();
+        messages.insert(id.clone());
+
+        INCOMING_QUEUE.lock().await.push_back(Message::Connect(ConnectMessage { 
+            token: token.clone(), 
+            entity: character,
+            id
+        }));
 
         loop {
             // create timeout and stream futures
@@ -189,73 +304,33 @@ pub async fn connect(
             match result {
                 Some(Ok(actix_ws::Message::Text(text))) => {
                     if let Ok(m) = Message::from_bytes(text.as_bytes()) {
-                        INCOMING_QUEUE.lock().await.push_back(m);
+                        // track incoming so we don't send them back
+                        messages.insert(m.id());
+                        // enqueue for database insertion and response
+                        INCOMING_QUEUE.lock().await.push_back(m.clone());
                     }
                 },
-                Some(Ok(actix_ws::Message::Binary(_))) => {
-                    let _ = session.close(None).await; 
-                    break;
-                },
-                Some(Ok(actix_ws::Message::Continuation(_))) => {
-                    let _ = session.close(None).await; 
-                    break;
-                },
-                Some(Ok(actix_ws::Message::Ping(_))) => {
-                    let _ = session.close(None).await; 
-                    break;
-                },
-                Some(Ok(actix_ws::Message::Pong(_))) => {
-                    let _ = session.close(None).await; 
-                    break;
-                },
-                Some(Ok(actix_ws::Message::Close(_))) => {
-                    let _ = session.close(None).await; 
-                    break;
-                },
-                Some(Ok(actix_ws::Message::Nop)) => {
-                    let _ = session.close(None).await; 
-                    break;
-                },
-                Some(Err(_)) => {
-                    let _ = session.close(None).await; 
+                Some(_) => {
+                    // close session and unregister handler
+                    let _ = session.close(None).await;
+                    unregister_handler(handler_id).await;
                     break;                    
                 },
                 None => ()
             }
 
-            // get modified entities within distance of character
-            let entities = queries::modified_entities(
-                &pool,
-                character_id,
-                timestamp
-            ).await.unwrap_or_default();
-
-            // update the timestamp, offset into the past
-            timestamp = Utc::now()
-                .checked_sub_signed(TimeDelta::milliseconds(100))
-                .unwrap_or(Utc::now());
-
-            for entity in entities {
-
-                if entity.id == character_id {
-                    continue;
-                }
-
-                println!("{} <- ({},{} for {})",character_id,entity.x,entity.y,entity.id);
-
-                // build move message for each modified entity
-                let message = serde_json::to_string(&Message::Move(MoveMessage {
-                    token: "".into(),
-                    x: entity.x,
-                    y: entity.y,
-                }));
-
-                if let Ok(data) = message {
-                    if session.text(data).await.is_err() {
-                        // TODO: log failure and maybe disconnect
+            // read all un-viewed messages (marking as viewed) and send them
+            for item in read_messages(handler_id).await {
+                // if it wasn't a message we received from this conenction, then send it
+                if !messages.remove(&item.id()) {
+                    if let Ok(data) = serde_json::to_string(&item) {
+                        let _ = session.text(data).await.map_err(|_| {
+                            // TODO: log failure and maybe disconnect
+                        });
                     }
                 }
             }
+
         }
     });
 

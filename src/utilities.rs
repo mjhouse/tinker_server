@@ -6,7 +6,30 @@ use tokio::task;
 use crate::data::payloads::AccountInfo;
 use crate::queries;
 use crate::{data::messages::Message, queries::Database};
-use crate::routes::INCOMING_QUEUE;
+use crate::routes::{INCOMING_QUEUE,OUTGOING_QUEUE,DATABASE_QUEUE,all_viewed};
+
+async fn process_message(message: Message) {
+    println!("{}: MOVED TO OUTGOING",message.id());
+
+    // 1. copy message from incoming to outgoing queue
+    let message1 = message.clone();
+    OUTGOING_QUEUE.lock().await.push_back(message1);
+
+    // 2. copy message from incoming to insertion queue
+    let message2 = message.clone();
+    DATABASE_QUEUE.lock().await.push_back(message2);
+
+    // 4. clear viewed messages from the outgoing queue
+    let mut queue = OUTGOING_QUEUE.lock().await;
+    let mut i = 0;
+    while i < queue.len() {
+        if !all_viewed(queue[i].id()).await {
+            i += 1;
+        } else {
+            queue.remove(i);
+        }
+    }
+}
 
 pub fn process_messages(pool: Database) {
     actix_web::rt::spawn(async {
@@ -23,29 +46,32 @@ pub fn process_messages(pool: Database) {
         let processer_task = async move {
             loop {
                 task::yield_now().await;
-                match INCOMING_QUEUE.lock().await.pop_front() {
-                    Some(Message::Move(m)) => {
-                        
-                        if let Ok(info) = token::decode::<AccountInfo,String>(m.token) {
-
-                            let id = info.character_id.unwrap();
-                            println!("{} -> ({},{})",id,m.x,m.y);
-
-                            queries::update_entity(
-                                &pool, 
-                                id, 
-                                m.x, 
-                                m.y
-                            ).await;
-                        }
-
-                    },
-                    Some(Message::Attack(m)) => {
-        
-                    },
-                    _ => ()
+                if let Some(message) = INCOMING_QUEUE.lock().await.pop_front() {
+                    process_message(message).await;
                 }
             }
+        };
+
+        let inserter_task = async move {
+            // take each message from the database queue and make the necessary
+            // changes to the database. How exactly they should be translated
+            // without a massive `match` statement is left as an exercise for
+            // future-me.
+
+            // match DATABASE_QUEUE.lock().await.pop_front() {
+            //     Some(Message::Move(m)) => {
+            //         queries::update_entity(
+            //             &pool, 
+            //             m.character_id, 
+            //             m.x, 
+            //             m.y
+            //         ).await;
+            //     },
+            //     Some(Message::Attack(m)) => {
+    
+            //     },
+            //     _ => ()
+            // }
         };
         
         tokio::select! {

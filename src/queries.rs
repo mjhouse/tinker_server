@@ -116,6 +116,23 @@ pub async fn modified_entities(
     .unwrap()
 }
 
+pub async fn local_entities(
+    database: &Database,
+    character_id: i32,
+    connected_ids: Vec<i32>,
+) -> diesel::QueryResult<Vec<CharacterSelect>> {
+    let mut conn = database.get().expect("No database");
+    web::block(move || {
+        use crate::schema::characters::dsl;
+        dsl::characters
+            .filter(dsl::id.eq_any(connected_ids))
+            .filter(dsl::id.ne(character_id))
+            .get_results(&mut conn)
+    })
+    .await
+    .unwrap()
+}
+
 pub async fn update_entity(
     database: &Database,
     character_id: i32,

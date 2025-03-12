@@ -1,25 +1,25 @@
 use serde::{Deserialize, Serialize};
+use uuid::Uuid;
+
+use super::models::CharacterSelect;
 
 #[derive(Clone, Serialize, Deserialize, Debug)]
 pub enum Message {
     Move(MoveMessage),
     Attack(AttackMessage),
-    Result(ResultMessage),
+    Initial(InitialMessage),
+    Connect(ConnectMessage),
 }
 
 impl Message {
-    pub fn success<T: ToString>(v: T) -> Self {
-        Self::Result(ResultMessage {
-            error: false,
-            text: v.to_string(),
-        })
-    }
 
-    pub fn failure<T: ToString>(v: T) -> Self {
-        Self::Result(ResultMessage {
-            error: true,
-            text: v.to_string(),
-        })
+    pub fn id(&self) -> Uuid {
+        match self {
+            Message::Move(m) => m.id,
+            Message::Attack(m) => m.id,
+            Message::Initial(m) => m.id,
+            Message::Connect(m) => m.id,
+        }
     }
 
     pub fn to_string(&self) -> serde_json::Result<String> {
@@ -32,8 +32,23 @@ impl Message {
 }
 
 #[derive(Clone, Serialize, Deserialize, Debug)]
+pub struct InitialMessage {
+    pub token: String,
+    pub id: Uuid,
+    pub entities: Vec<CharacterSelect>
+}
+
+#[derive(Clone, Serialize, Deserialize, Debug)]
+pub struct ConnectMessage {
+    pub token: String,
+    pub id: Uuid,
+    pub entity: CharacterSelect
+}
+
+#[derive(Clone, Serialize, Deserialize, Debug)]
 pub struct MoveMessage {
     pub token: String,
+    pub id: Uuid,
     pub x: f32,
     pub y: f32,
 }
@@ -41,14 +56,9 @@ pub struct MoveMessage {
 #[derive(Clone, Serialize, Deserialize, Debug)]
 pub struct AttackMessage {
     pub token: String,
+    pub id: Uuid,
     pub target: i32,
     pub ability: i32,
-}
-
-#[derive(Clone, Serialize, Deserialize, Debug)]
-pub struct ResultMessage {
-    pub error: bool,
-    pub text: String,
 }
 
 #[cfg(test)]
@@ -67,6 +77,7 @@ mod tests {
     async fn test_serialize_message() {
         let message = serde_json::to_string(&Message::Move(MoveMessage {
             token: "test".to_string(),
+            id: Uuid::now_v7(),
             x: 0.5,
             y: 0.5,
         }));
