@@ -3,24 +3,23 @@ use actix_web::{web, App, HttpServer};
 use dotenv;
 use utilities::process_messages;
 
-mod data;
+mod payloads;
 mod errors;
 mod queries;
 mod routes;
-mod schema;
 mod utilities;
 
 #[cfg(test)]
 pub mod test_utils {
-    use diesel_migrations::{embed_migrations,EmbeddedMigrations, MigrationHarness};
+    use diesel_migrations::MigrationHarness;
     use diesel::{r2d2::ConnectionManager, Connection,RunQueryDsl,PgConnection}; 
     use actix_web::{dev::Service, test, web, App};
     use actix_http::Request;
     use url::Url;
+    use tinker_records::tests::MIGRATIONS;
 
     use crate::{queries::Database, utilities};
     
-    const MIGRATIONS: EmbeddedMigrations = embed_migrations!("migrations/");
     const SQL: &str = include_str!("../assets/setup.sql");
     
     pub async fn pool(database: &str) -> Database {

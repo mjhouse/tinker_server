@@ -2,13 +2,13 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::time::Duration;
 
-use crate::data::models::CharacterSelect;
-use crate::data::payloads::{AccountKey, CreateCharacterForm, FetchCharactersForm, SelectCharacterForm};
-use crate::data::messages::*;
+use tinker_records::models::CharacterSelect;
+use crate::payloads::{AccountKey, CreateCharacterForm, FetchCharactersForm, SelectCharacterForm};
+use tinker_records::messages::*;
 use crate::errors::{Error, Result};
 use crate::utilities;
 use crate::{
-    data::payloads::{AccountInfo, Login, Register},
+    payloads::{AccountInfo, Login, Register},
     queries::{self, Database},
 };
 use actix_web::{get, post, web, HttpRequest, Responder};
@@ -74,9 +74,9 @@ pub async fn all_viewed(message_id: Uuid) -> bool {
     let viewed = VIEWED.lock().await;
     REGISTRY.lock().await
         .keys()
-        .all(|item| viewed
+        .all(|account_id| viewed
             .get(&message_id)
-            .map(|v| v.contains(item))
+            .map(|v| v.contains(account_id))
             .unwrap_or(false))
 }
 
@@ -265,12 +265,10 @@ pub async fn connect(
         //      - in range
         let entities = get_initial(&pool,account.clone()).await;
         
+        dbg!(&entities);
+
         // 2. build an "InitialState" message for the client
-        let item = Message::Initial(InitialMessage {
-            token: token.clone(),
-            id: Uuid::now_v7(),
-            entities
-        });
+        let item = Message::Initial(account.id,entities);
 
         // 3. send the initial state message to the client
         if let Ok(data) = serde_json::to_string(&item) {
@@ -279,14 +277,13 @@ pub async fn connect(
             });
         }
 
-        let id = Uuid::now_v7();
-        messages.insert(id.clone());
+        let message = Message::Connect(account.id,character);
+        let message_id = message.id();
 
-        INCOMING_QUEUE.lock().await.push_back(Message::Connect(ConnectMessage { 
-            token: token.clone(), 
-            entity: character,
-            id
-        }));
+        messages.insert(message_id);
+        set_viewed(account.id, message_id).await;
+
+        INCOMING_QUEUE.lock().await.push_back(message);
 
         loop {
             // create timeout and stream futures
@@ -303,7 +300,7 @@ pub async fn connect(
             // handle incoming messages
             match result {
                 Some(Ok(actix_ws::Message::Text(text))) => {
-                    if let Ok(m) = Message::from_bytes(text.as_bytes()) {
+                    if let Ok(m) = Message::deserialize(text.as_bytes()) {
                         // track incoming so we don't send them back
                         messages.insert(m.id());
                         // enqueue for database insertion and response
@@ -340,7 +337,8 @@ pub async fn connect(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{data::models::CharacterSelect, test_utils};
+    use tinker_records::models::CharacterSelect;
+    use crate::test_utils;
     use actix_web::{test, App};
     use diesel::pg::PgConnection;
     use diesel::r2d2::ConnectionManager;

@@ -1,4 +1,5 @@
-use crate::data::models::{AccountInsert, AccountSelect, CharacterInsert, CharacterSelect};
+use tinker_records::models::{AccountInsert, AccountSelect, CharacterInsert, CharacterSelect};
+
 use actix_web::web;
 use chrono::{DateTime, Utc};
 use diesel::pg::PgConnection;
@@ -17,7 +18,7 @@ pub async fn create_account<T: ToString>(
     let password = password.to_string();
     let mut conn = database.get().expect("No database");
     web::block(move || {
-        use crate::schema::accounts::dsl;
+        use tinker_records::schema::accounts::dsl;
 
         // insert the model into the database
         diesel::insert_into(dsl::accounts)
@@ -35,7 +36,7 @@ pub async fn fetch_account<T: ToString>(
     let username = username.to_string();
     let mut conn = database.get().expect("No database");
     web::block(move || {
-        use crate::schema::accounts::dsl;
+        use tinker_records::schema::accounts::dsl;
 
         dsl::accounts
             .filter(dsl::username.eq(username))
@@ -53,7 +54,7 @@ pub async fn create_character<T: ToString>(
     let name = name.to_string();
     let mut conn = database.get().expect("No database");
     web::block(move || {
-        use crate::schema::characters::dsl;
+        use tinker_records::schema::characters::dsl;
 
         // insert the model into the database
         diesel::insert_into(dsl::characters)
@@ -70,7 +71,7 @@ pub async fn fetch_characters(
 ) -> diesel::QueryResult<Vec<CharacterSelect>> {
     let mut conn = database.get().expect("No database");
     web::block(move || {
-        use crate::schema::characters::dsl;
+        use tinker_records::schema::characters::dsl;
 
         dsl::characters
             .filter(dsl::account_id.eq(account_id))
@@ -87,7 +88,7 @@ pub async fn fetch_character(
 ) -> diesel::QueryResult<CharacterSelect> {
     let mut conn = database.get().expect("No database");
     web::block(move || {
-        use crate::schema::characters::dsl;
+        use tinker_records::schema::characters::dsl;
 
         dsl::characters
             .filter(dsl::account_id.eq(account_id))
@@ -105,7 +106,7 @@ pub async fn modified_entities(
 ) -> diesel::QueryResult<Vec<CharacterSelect>> {
     let mut conn = database.get().expect("No database");
     web::block(move || {
-        use crate::schema::characters::dsl;
+        use tinker_records::schema::characters::dsl;
 
         dsl::characters
             // .filter(dsl::id.eq(character_id))
@@ -123,7 +124,7 @@ pub async fn local_entities(
 ) -> diesel::QueryResult<Vec<CharacterSelect>> {
     let mut conn = database.get().expect("No database");
     web::block(move || {
-        use crate::schema::characters::dsl;
+        use tinker_records::schema::characters::dsl;
         dsl::characters
             .filter(dsl::id.eq_any(connected_ids))
             .filter(dsl::id.ne(character_id))
@@ -141,7 +142,7 @@ pub async fn update_entity(
 ) {
     let mut conn = database.get().expect("No database");
     web::block(move || {
-        use crate::schema::characters::dsl;
+        use tinker_records::schema::characters::dsl;
 
         diesel::update(dsl::characters
             .filter(dsl::id.eq(character_id)))

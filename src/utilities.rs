@@ -1,15 +1,12 @@
-use std::time::Duration;
-
 use tokio::signal::unix::{signal, SignalKind};
 use tokio::task;
 
-use crate::data::payloads::AccountInfo;
-use crate::queries;
-use crate::{data::messages::Message, queries::Database};
+use tinker_records::messages::Message;
+use crate::queries::Database;
 use crate::routes::{INCOMING_QUEUE,OUTGOING_QUEUE,DATABASE_QUEUE,all_viewed};
 
 async fn process_message(message: Message) {
-    println!("{}: MOVED TO OUTGOING",message.id());
+    println!("MOVED TO OUTGOING: {:?}",message);
 
     // 1. copy message from incoming to outgoing queue
     let message1 = message.clone();
