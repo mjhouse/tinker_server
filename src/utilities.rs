@@ -1,22 +1,12 @@
 use tokio::signal::unix::{signal, SignalKind};
 use tokio::task;
 
-use tinker_records::messages::Message;
-use crate::queries::Database;
+use tinker_records::messages::{Message,Value};
+use crate::queries::{self, Database};
 use crate::routes::{INCOMING_QUEUE,OUTGOING_QUEUE,DATABASE_QUEUE,all_viewed};
 
-async fn process_message(message: Message) {
-    println!("MOVED TO OUTGOING: {:?}",message);
-
-    // 1. copy message from incoming to outgoing queue
-    let message1 = message.clone();
-    OUTGOING_QUEUE.lock().await.push_back(message1);
-
-    // 2. copy message from incoming to insertion queue
-    let message2 = message.clone();
-    DATABASE_QUEUE.lock().await.push_back(message2);
-
-    // 4. clear viewed messages from the outgoing queue
+async fn clear_messages() {
+    // clear viewed messages from the outgoing queue
     let mut queue = OUTGOING_QUEUE.lock().await;
     let mut i = 0;
     while i < queue.len() {
@@ -26,6 +16,63 @@ async fn process_message(message: Message) {
             queue.remove(i);
         }
     }
+}
+
+async fn process_message(message: Message) {
+    // println!("MOVED TO OUTGOING: {:?}",message);
+    
+    // copy message from incoming to outgoing queue
+    let message1 = message.clone();
+    OUTGOING_QUEUE.lock().await.push_back(message1);
+
+    // copy message from incoming to insertion queue
+    let message2 = message.clone();
+    DATABASE_QUEUE.lock().await.push_back(message2);
+}
+
+async fn insert_message(database: &Database, message: Message) {
+    match message.value {
+        Value::Move(m) => {
+            queries::update_entity(
+                database, 
+                message.header.account_id, 
+                m.current.x, 
+                m.current.y
+            ).await;
+        },
+        Value::Attack(m) => {
+            
+        },
+        Value::Initial(m) => {
+            
+        },
+        Value::Connect(m) => {
+            
+        },
+        Value::Disconnect(m) => {
+            
+        },
+    }
+
+    // take each message from the database queue and make the necessary
+    // changes to the database. How exactly they should be translated
+    // without a massive `match` statement is left as an exercise for
+    // future-me.
+
+    // match DATABASE_QUEUE.lock().await.pop_front() {
+    //     Some(Message::Move(m)) => {
+    //         queries::update_entity(
+    //             &pool, 
+    //             m.character_id, 
+    //             m.x, 
+    //             m.y
+    //         ).await;
+    //     },
+    //     Some(Message::Attack(m)) => {
+
+    //     },
+    //     _ => ()
+    // }
 }
 
 pub fn process_messages(pool: Database) {
@@ -50,31 +97,27 @@ pub fn process_messages(pool: Database) {
         };
 
         let inserter_task = async move {
-            // take each message from the database queue and make the necessary
-            // changes to the database. How exactly they should be translated
-            // without a massive `match` statement is left as an exercise for
-            // future-me.
+            loop {
+                task::yield_now().await;
+                if let Some(message) = DATABASE_QUEUE.lock().await.pop_front() {
+                    insert_message(&pool,message).await;
+                }
+            }
+        };
 
-            // match DATABASE_QUEUE.lock().await.pop_front() {
-            //     Some(Message::Move(m)) => {
-            //         queries::update_entity(
-            //             &pool, 
-            //             m.character_id, 
-            //             m.x, 
-            //             m.y
-            //         ).await;
-            //     },
-            //     Some(Message::Attack(m)) => {
-    
-            //     },
-            //     _ => ()
-            // }
+        let cleanup_task = async move {
+            loop {
+                task::yield_now().await;
+                clear_messages().await;
+            }
         };
         
         tokio::select! {
             _ = canceled_task => println!("Received Ctrl+C"),
             _ = terminate_task => println!("Received SIGTERM"),
-            _ = processer_task => ()
+            _ = processer_task => (),
+            _ = inserter_task => (),
+            _ = cleanup_task => ()
         };
     });
 }

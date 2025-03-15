@@ -1,11 +1,10 @@
-use std::collections::{HashMap, HashSet, VecDeque};
-use std::hash::{DefaultHasher, Hash, Hasher};
+use std::collections::{HashMap, VecDeque};
 use std::time::Duration;
 
 use tinker_records::models::CharacterSelect;
-use crate::payloads::{AccountKey, CreateCharacterForm, FetchCharactersForm, SelectCharacterForm};
+use crate::payloads::AccountKey;
 use tinker_records::messages::*;
-use crate::errors::{Error, Result};
+use crate::errors::Result;
 use crate::utilities;
 use crate::{
     payloads::{AccountInfo, Login, Register},
@@ -33,9 +32,9 @@ async fn get_initial(pool: &Database, account: AccountInfo) -> Vec<CharacterSele
         .lock()
         .await
         .values()
-        .filter_map(|a| a.character_id.clone())
+        .map(|a| a.id)
         .collect::<Vec<i32>>();
-    queries::local_entities(pool, account.character_id.unwrap(), connected).await.unwrap_or_default()
+    queries::local_entities(pool, account.id, connected).await.unwrap_or_default()
 }
 
 pub async fn register_handler(account: AccountInfo) -> i32 {
@@ -95,79 +94,6 @@ pub async fn read_messages(account_id: i32) -> Vec<Message> {
         .await
 }
 
-#[post("/characters")]
-async fn create_character(
-    pool: web::Data<Database>,
-    form: web::Json<CreateCharacterForm>,
-) -> Result<impl Responder> {
-    // validate the form fields
-    form.validate()?;
-
-    // decode the account information
-    let info: AccountInfo = utilities::token::decode(
-        form.token.clone()
-    )?;
-
-    // fetch all of the characters for the account
-    Ok(web::Json(queries::create_character(
-        &pool,
-        form.name.clone(),
-        info.id
-    ).await?))
-}
-
-#[get("/characters")]
-async fn fetch_characters(
-    pool: web::Data<Database>,
-    form: web::Json<FetchCharactersForm>,
-) -> Result<impl Responder> {
-    // validate the form fields
-    form.validate()?;
-
-    // decode the account information
-    let info: AccountInfo = utilities::token::decode(
-        form.token.clone()
-    )?;
-
-    // fetch all of the characters for the account
-    Ok(web::Json(queries::fetch_characters(
-        &pool, 
-        info.id
-    ).await?))
-}
-
-#[get("/character")]
-async fn select_character(
-    pool: web::Data<Database>,
-    form: web::Json<SelectCharacterForm>,
-) -> Result<impl Responder> {
-    // validate the form fields
-    form.validate()?;
-
-    // decode the account information
-    let mut info: AccountInfo = utilities::token::decode(
-        form.token.clone()
-    )?;
-
-    // make sure the character actually exists
-    let character = queries::fetch_character(
-        &pool, 
-        info.id,
-        form.character_id
-    ).await?;
-
-    // update the character id for the session
-    info.character_id = Some(character.id);
-
-    let token = utilities::token::encode(&info)?;
-
-    Ok(web::Json(AccountKey {
-        id: info.id,
-        name: info.name,
-        token: token,
-    }))
-}
-
 #[get("/login")]
 async fn login(
     pool: web::Data<Database>,
@@ -180,13 +106,7 @@ async fn login(
     let password = form.password.clone();
 
     // fetch the database record by username
-    let account = queries::fetch_account(&pool, username).await?;
-
-    let character = queries::fetch_characters(&pool, account.id).await?
-        .iter()
-        .next()
-        .cloned()
-        .ok_or(Error::NoCharacter)?;
+    let account = queries::fetch_character(&pool, username).await?;
 
     // validate the password hash
     utilities::password::valid(account.password, password)?;
@@ -194,15 +114,14 @@ async fn login(
     // create an authentication token from the account
     let token = utilities::token::encode(&AccountInfo {
         id: account.id,
-        name: account.username.clone(),
-        character_id: Some(character.id)
+        username: account.username.clone()
     })?;
 
     // return the account information
     Ok(web::Json(AccountKey {
         id: account.id,
         name: account.username,
-        token: token,
+        token: token, 
     }))
 }
 
@@ -220,14 +139,12 @@ async fn register(
     let password = utilities::password::hash(form.password1.clone())?;
 
     // create the database record
-    let account = queries::create_account(&pool, username, password).await?;
-    let character = queries::create_character(&pool, account.username.clone(), account.id).await?;
+    let account = queries::create_character(&pool, username, password).await?;
 
     // return the account information
     Ok(web::Json(AccountInfo {
-        id: account.id,
-        name: account.username,
-        character_id: Some(character.id)
+        id: account.id, 
+        username: account.username,
     }))
 }
 
@@ -243,45 +160,35 @@ pub async fn connect(
 
     actix_web::rt::spawn(async move {
 
-        // keep track of incoming messages so we don't send back 
-        // the messages we received.
-        let mut messages: HashSet<Uuid> = HashSet::new();
-
         // decode the login token to get basic account information
         let account: AccountInfo = utilities::token::decode(token.to_string())
             .expect("Could not decode token");
 
         let character: CharacterSelect = queries::fetch_character(
             &pool, 
-            account.id, 
-            account.character_id.expect("No character id")
+            &account.username
         ).await.expect("Could not find character");
     
         // the id for this particular connection
         let handler_id = register_handler(account.clone()).await;
 
-        // 1. get current records for entities that are-
+        // get current records for entities that are-
         //      - connected
         //      - in range
         let entities = get_initial(&pool,account.clone()).await;
         
-        dbg!(&entities);
-
-        // 2. build an "InitialState" message for the client
+        // build an "InitialState" message for the client
         let item = Message::Initial(account.id,entities);
 
-        // 3. send the initial state message to the client
+        // send the initial state message to the client
         if let Ok(data) = serde_json::to_string(&item) {
             let _ = session.text(data).await.map_err(|_| {
                 // TODO: log failure and maybe disconnect
             });
         }
 
-        let message = Message::Connect(account.id,character);
-        let message_id = message.id();
-
-        messages.insert(message_id);
-        set_viewed(account.id, message_id).await;
+        let message = Message::Connect(account.id,character.clone());
+        set_viewed(account.id, message.id()).await;
 
         INCOMING_QUEUE.lock().await.push_back(message);
 
@@ -300,17 +207,24 @@ pub async fn connect(
             // handle incoming messages
             match result {
                 Some(Ok(actix_ws::Message::Text(text))) => {
+                    dbg!(&text);
                     if let Ok(m) = Message::deserialize(text.as_bytes()) {
                         // track incoming so we don't send them back
-                        messages.insert(m.id());
+                        set_viewed(account.id, m.id()).await;
                         // enqueue for database insertion and response
                         INCOMING_QUEUE.lock().await.push_back(m.clone());
                     }
-                },
+                }, 
                 Some(_) => {
-                    // close session and unregister handler
-                    let _ = session.close(None).await;
                     unregister_handler(handler_id).await;
+                    
+                    let message = Message::Disconnect(account.id, character);
+                    set_viewed(account.id, message.id()).await;
+                    
+                    INCOMING_QUEUE.lock().await.push_back(message);
+
+                    // close session
+                    let _ = session.close(None).await;
                     break;                    
                 },
                 None => ()
@@ -318,13 +232,10 @@ pub async fn connect(
 
             // read all un-viewed messages (marking as viewed) and send them
             for item in read_messages(handler_id).await {
-                // if it wasn't a message we received from this conenction, then send it
-                if !messages.remove(&item.id()) {
-                    if let Ok(data) = serde_json::to_string(&item) {
-                        let _ = session.text(data).await.map_err(|_| {
-                            // TODO: log failure and maybe disconnect
-                        });
-                    }
+                if let Ok(data) = serde_json::to_string(&item) {
+                    let _ = session.text(data).await.map_err(|_| {
+                        // TODO: log failure and maybe disconnect
+                    });
                 }
             }
 
@@ -388,7 +299,7 @@ mod tests {
             password1: "PASSWORD".into(),
             password2: "PASSWORD".into(),
         });
-
+ 
         assert!(resp.status().is_success());
 
         test_utils::teardown("test_endpoint_register1");
@@ -472,72 +383,6 @@ mod tests {
         assert!(!resp.status().is_success());
 
         test_utils::teardown("test_endpoint_login3");
-    }
-
-    #[actix_web::test]
-    async fn test_endpoint_create_character() {
-        let app = test_utils::setup("test_endpoint_create_character").await;
-
-        let token = utilities::token::encode(&AccountInfo {
-            id: 1, // default preloaded account
-            name: "USERNAME".into(),
-            character_id: None
-        }).unwrap();
-
-        // create new a character
-        let resp = query::post!(app,"/characters",CreateCharacterForm {
-            token,
-            name: "NAME".to_string()
-        });
-        
-        assert!(resp.status().is_success());
-
-        test_utils::teardown("test_endpoint_create_character");
-    }
-
-    #[actix_web::test]
-    async fn test_endpoint_fetch_characters() {
-        let app = test_utils::setup("test_endpoint_fetch_characters").await;
-
-        let token = utilities::token::encode(&AccountInfo {
-            id: 1, // default preloaded account
-            name: "USERNAME".into(),
-            character_id: None
-        }).unwrap();
-
-        // fetch all characters
-        let resp = query::get!(app,"/characters", FetchCharactersForm { token });
-
-        let body = test::read_body(resp).await;
-        let characters: Vec<CharacterSelect> = serde_json::from_slice(&body).unwrap();
-        assert_eq!(characters.len(),1);
-
-        test_utils::teardown("test_endpoint_fetch_characters");
-    }
-
-    #[actix_web::test]
-    async fn test_endpoint_select_character() {
-        let app = test_utils::setup("test_endpoint_select_character").await;
-
-        let token = utilities::token::encode(&AccountInfo {
-            id: 1, // default preloaded account
-            name: "USERNAME".into(),
-            character_id: None
-        }).unwrap();
-
-        // get updated token with character selected
-        let resp = query::get!(app,"/character", SelectCharacterForm { 
-            token,
-            character_id: 1 // default preloaded character 
-        });
-        
-        let body = test::read_body(resp).await;
-        let key: AccountKey = serde_json::from_slice(&body).unwrap();
-        let info: AccountInfo = utilities::token::decode(key.token).unwrap();
-
-        dbg!(info);
-
-        test_utils::teardown("test_endpoint_select_character");
     }
 
     // #[actix_web::test]

@@ -78,9 +78,6 @@ pub mod test_utils {
                 .app_data(web::Data::new(pool.clone()))
                 .service(crate::routes::login)
                 .service(crate::routes::register)
-                .service(crate::routes::create_character)
-                .service(crate::routes::fetch_characters)
-                .service(crate::routes::select_character)
                 .service(crate::routes::connect)
         ).await
     }
@@ -145,9 +142,6 @@ async fn main() -> std::io::Result<()> {
             .app_data(web::Data::new(pool.clone()))
             .service(routes::login)
             .service(routes::register)
-            .service(routes::create_character)
-            .service(routes::fetch_characters)
-            .service(routes::select_character)
             .service(routes::connect)
     })
     .bind(("127.0.0.1", 8080))?

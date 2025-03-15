@@ -28,23 +28,6 @@ pub struct Login {
     #[validate(length(min = 8, max = 256), does_not_contain(pattern = " "))]
     pub password: String,
 }
-
-#[derive(Deserialize, Serialize, Clone, Validate)]
-pub struct CreateCharacterForm {
-    pub token: String,
-    pub name: String
-}
-
-#[derive(Deserialize, Serialize, Clone, Validate)]
-pub struct FetchCharactersForm {
-    pub token: String,
-}
-
-#[derive(Deserialize, Serialize, Clone, Validate)]
-pub struct SelectCharacterForm {
-    pub token: String,
-    pub character_id: i32
-}
 // ------------------------------------------------
 
 // ------------------------------------------------
@@ -52,8 +35,7 @@ pub struct SelectCharacterForm {
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct AccountInfo {
     pub id: i32,
-    pub name: String,
-    pub character_id: Option<i32>
+    pub username: String
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
